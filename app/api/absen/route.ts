@@ -157,20 +157,18 @@ export async function POST(req: NextRequest) {
       status: "Hadir",
     };
 
-    // Attempt insert into 'riwayat_absen'
-    const { error: insertError } = await supabase.from("riwayat_absen").insert([payloadAbsen]);
-
-    if (insertError) {
-      // Fallback insert into 'kehadiran'
-      await supabase.from("kehadiran").insert([
+    // Insert into 'riwayat_absen' and 'kehadiran'
+    await Promise.allSettled([
+      supabase.from("riwayat_absen").insert([payloadAbsen]),
+      supabase.from("kehadiran").insert([
         {
           serial_number: cleanUid,
           nama: namaPengguna,
           timestamp: timestampNow,
           sesi_nama: sesi_nama || "Umum",
         },
-      ]);
-    }
+      ]),
+    ]);
 
     // 3. Kembalikan Response Sukses
     return NextResponse.json({

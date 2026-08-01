@@ -177,52 +177,95 @@ export default function NFCAttendanceApp() {
     let isMounted = true;
 
     const fetchInitialRecords = async () => {
-      // Fetch latest 50 records from riwayat_absen
-      const { data, error } = await supabase
-        .from("riwayat_absen")
-        .select("*")
-        .order("timestamp", { ascending: false })
-        .limit(50);
+      try {
+        const [resRiwayat, resKehadiran] = await Promise.all([
+          supabase.from("riwayat_absen").select("*").order("timestamp", { ascending: false }).limit(100),
+          supabase.from("kehadiran").select("*").order("timestamp", { ascending: false }).limit(100),
+        ]);
 
-      if (error) {
-        console.warn("Gagal fetch riwayat_absen, mencoba kehadiran:", error);
-        // Fallback to kehadiran
-        const { data: dataKehadiran } = await supabase
-          .from("kehadiran")
-          .select("*")
-          .order("timestamp", { ascending: false })
-          .limit(50);
-          
-        if (dataKehadiran && isMounted) {
-           setRecords(
-            dataKehadiran.map((d: any) => ({
-              id: `keh-${d.id}`,
-              serialNumber: d.serial_number,
-              timestamp: new Date(d.timestamp),
+        const recordMap = new Map<string, AttendanceRecord>();
+
+        // Load records from riwayat_absen
+        if (resRiwayat.data) {
+          for (const d of resRiwayat.data) {
+            const uidClean = hexToDecimal(String(d.serial_number || "").trim(), true);
+            const key = `rw-${d.id}`;
+            const photoUrlData = supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uidClean}.jpg`);
+
+            recordMap.set(key, {
+              id: key,
+              serialNumber: uidClean,
+              timestamp: d.timestamp ? new Date(d.timestamp) : new Date(),
               status: "success",
-              name: d.nama,
-              photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${d.serial_number}.jpg`).data.publicUrl
-            }))
-          );
+              name: d.nama_peserta || d.nama || "Peserta NFC",
+              photoUrl: photoUrlData?.data?.publicUrl,
+            });
+          }
         }
-        return;
-      }
 
-      if (data && isMounted) {
-        setRecords(
-          data.map((d: any) => ({
-            id: d.id.toString(),
-            serialNumber: d.serial_number,
-            timestamp: new Date(d.timestamp),
-            status: "success",
-            name: d.nama_peserta || d.nama,
-            photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${d.serial_number}.jpg`).data.publicUrl
-          }))
+        // Load records from kehadiran
+        if (resKehadiran.data) {
+          for (const d of resKehadiran.data) {
+            const uidClean = hexToDecimal(String(d.serial_number || "").trim(), true);
+            const timeKey = d.timestamp ? new Date(d.timestamp).getTime() : 0;
+
+            const alreadyExists = Array.from(recordMap.values()).some(
+              (r) => r.serialNumber === uidClean && Math.abs(r.timestamp.getTime() - timeKey) < 5000
+            );
+
+            if (!alreadyExists) {
+              const key = `keh-${d.id}`;
+              const photoUrlData = supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uidClean}.jpg`);
+              recordMap.set(key, {
+                id: key,
+                serialNumber: uidClean,
+                timestamp: d.timestamp ? new Date(d.timestamp) : new Date(),
+                status: "success",
+                name: d.nama || "Peserta NFC",
+                photoUrl: photoUrlData?.data?.publicUrl,
+              });
+            }
+          }
+        }
+
+        const sorted = Array.from(recordMap.values()).sort(
+          (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
         );
+
+        if (isMounted) {
+          setRecords(sorted);
+        }
+      } catch (err) {
+        console.error("Error fetching attendance records:", err);
       }
     };
 
     fetchInitialRecords();
+
+    // Helper for adding realtime record
+    const handleNewRecord = (newRec: any, source: string) => {
+      const uidClean = hexToDecimal(String(newRec.serial_number || "").trim(), true);
+      const timeVal = newRec.timestamp ? new Date(newRec.timestamp).getTime() : Date.now();
+
+      setRecords((prev) => {
+        const isDuplicate = prev.some(
+          (r) => r.serialNumber === uidClean && Math.abs(r.timestamp.getTime() - timeVal) < 5000
+        );
+        if (isDuplicate) return prev;
+
+        const photoUrlData = supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uidClean}.jpg`);
+        const added: AttendanceRecord = {
+          id: `${source}-${newRec.id || Math.random().toString(36).substring(7)}`,
+          serialNumber: uidClean,
+          timestamp: newRec.timestamp ? new Date(newRec.timestamp) : new Date(),
+          status: "success",
+          name: newRec.nama_peserta || newRec.nama || "Peserta NFC",
+          photoUrl: photoUrlData?.data?.publicUrl,
+        };
+
+        return [added, ...prev];
+      });
+    };
 
     // Subscribe to realtime inserts on riwayat_absen
     const channel = supabase
@@ -230,21 +273,7 @@ export default function NFCAttendanceApp() {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "riwayat_absen" },
-        (payload) => {
-          const newRec = payload.new as any;
-          setRecords((prev) => {
-            if (prev.some((r) => r.id === newRec.id.toString())) return prev;
-            const added: AttendanceRecord = {
-              id: newRec.id.toString(),
-              serialNumber: newRec.serial_number,
-              timestamp: new Date(newRec.timestamp),
-              status: "success",
-              name: newRec.nama_peserta || newRec.nama,
-              photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${newRec.serial_number}.jpg`).data.publicUrl
-            };
-            return [added, ...prev];
-          });
-        }
+        (payload) => handleNewRecord(payload.new, "rw")
       )
       .subscribe();
 
@@ -254,21 +283,7 @@ export default function NFCAttendanceApp() {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "kehadiran" },
-        (payload) => {
-          const newRec = payload.new as any;
-          setRecords((prev) => {
-            if (prev.some((r) => r.id === `keh-${newRec.id}`)) return prev;
-            const added: AttendanceRecord = {
-              id: `keh-${newRec.id}`,
-              serialNumber: newRec.serial_number,
-              timestamp: new Date(newRec.timestamp),
-              status: "success",
-              name: newRec.nama,
-              photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${newRec.serial_number}.jpg`).data.publicUrl
-            };
-            return [added, ...prev];
-          });
-        }
+        (payload) => handleNewRecord(payload.new, "keh")
       )
       .subscribe();
 
@@ -483,18 +498,35 @@ export default function NFCAttendanceApp() {
 
       const photoUrl = publicUrlData?.publicUrl;
 
-      // 3. Save to database
+      // 3. Save to database (Save to riwayat_absen & kehadiran)
       try {
-        await supabase.from("kehadiran").insert([
+        const timestampNow = new Date().toISOString();
+        const sesiNamaNow = activeSession?.nama_sesi || "Umum";
+
+        const { error: rErr } = await supabase.from("riwayat_absen").insert([
+          {
+            serial_number: cleanUid,
+            nama_peserta: namaPengguna,
+            sesi_nama: sesiNamaNow,
+            status: "Hadir",
+            timestamp: timestampNow,
+          },
+        ]);
+
+        const { error: kErr } = await supabase.from("kehadiran").insert([
           {
             serial_number: cleanUid,
             nama: namaPengguna,
-            timestamp: new Date().toISOString(),
-            sesi_nama: activeSession?.nama_sesi || "Umum",
+            timestamp: timestampNow,
+            sesi_nama: sesiNamaNow,
           },
         ]);
+
+        if (rErr && kErr) {
+          console.warn("Gagal simpan ke riwayat_absen & kehadiran:", rErr, kErr);
+        }
       } catch (dbErr) {
-        console.warn("Gagal simpan ke tabel kehadiran:", dbErr);
+        console.warn("Gagal simpan ke database presensi:", dbErr);
       }
 
       setToastMsg({
@@ -800,7 +832,7 @@ export default function NFCAttendanceApp() {
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-1 p-4 md:p-8 max-w-7xl mx-auto w-full overflow-y-auto">
+        <main className="flex-1 p-3 md:p-5 max-w-7xl mx-auto w-full overflow-y-auto">
           {activeTab === "sesi" && <ManajemenSesi />}
 
           {activeTab === "nfc" && <InputNFCPesertaForm />}
@@ -814,7 +846,7 @@ export default function NFCAttendanceApp() {
           )}
 
           {activeTab === "presensi" && (
-            <div className="flex flex-col gap-6 h-full">
+            <div className="flex flex-col gap-4 h-full">
               {/* Hidden Auto-focused Input for USB NFC Reader */}
               <input
                 ref={usbInputRef}
@@ -830,16 +862,16 @@ export default function NFCAttendanceApp() {
               />
 
               {/* Active Session Auto Status Banner */}
-              <div className="w-full">
+              <div className="w-full shrink-0">
                 {activeSession ? (
-                  <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
-                    <div className="flex items-center gap-3">
-                      <div className="w-3.5 h-3.5 rounded-full bg-emerald-500 animate-ping shrink-0" />
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-xs">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-emerald-500 animate-ping shrink-0" />
                       <div>
                         <div className="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wider">
                           Otomatis Aktif Sesi Presensi Saat Ini
                         </div>
-                        <div className="text-base font-bold text-emerald-950">
+                        <div className="text-sm font-bold text-emerald-950">
                           {activeSession.nama_sesi}
                         </div>
                         <div className="text-xs text-emerald-700 font-medium">
@@ -848,29 +880,26 @@ export default function NFCAttendanceApp() {
                         </div>
                       </div>
                     </div>
-                    <span className="px-3.5 py-1.5 bg-emerald-600 text-white text-xs font-extrabold rounded-full shadow-sm shrink-0">
+                    <span className="px-3 py-1 bg-emerald-600 text-white text-[11px] font-extrabold rounded-full shadow-2xs shrink-0">
                       SEDANG BERLANGSUNG
                     </span>
                   </div>
                 ) : (
-                  <div className="p-4 bg-slate-100 border border-slate-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-3.5 h-3.5 rounded-full bg-slate-400 shrink-0" />
+                  <div className="p-3 bg-slate-100 border border-slate-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-slate-400 shrink-0" />
                       <div>
                         <div className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">
                           Status Sesi Presensi
                         </div>
-                        <div className="text-sm font-bold text-slate-700">
+                        <div className="text-xs font-bold text-slate-700">
                           Tidak ada sesi absensi otomatis yang berlangsung saat ini
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          Pemindaian tetap dapat digunakan, atau atur jadwal di menu Sesi &gt; Manajemen Sesi.
                         </div>
                       </div>
                     </div>
                     <button
                       onClick={() => setActiveTab("sesi")}
-                      className="px-3.5 py-1.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-xl transition-colors shrink-0 shadow-2xs"
+                      className="px-3 py-1 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition-colors shrink-0 shadow-2xs"
                     >
                       Kelola Sesi
                     </button>
@@ -880,47 +909,43 @@ export default function NFCAttendanceApp() {
 
               {/* Toast Feedback Notification */}
               {toastMsg && (
-                <div className={`p-4 rounded-2xl border font-bold text-sm flex items-center gap-3 shadow-md transition-all ${
+                <div className={`p-3 rounded-xl border font-bold text-xs flex items-center gap-2.5 shadow-sm transition-all shrink-0 ${
                   toastMsg.type === "success"
                     ? "bg-emerald-600 text-white border-emerald-700"
                     : "bg-rose-600 text-white border-rose-700"
                 }`}>
-                  <CheckCircle2 className="w-6 h-6 shrink-0" />
+                  <CheckCircle2 className="w-5 h-5 shrink-0" />
                   <span>{toastMsg.text}</span>
                 </div>
               )}
 
-              <div className="flex flex-col md:flex-row gap-6 md:gap-8 flex-1">
+              <div className="flex flex-col md:flex-row gap-4 md:gap-6 flex-1 min-h-0">
                 {/* Left Panel: Scanner */}
-                <section className="w-full md:w-[400px] flex flex-col gap-4 shrink-0">
+                <section className="w-full md:w-[340px] lg:w-[360px] flex flex-col gap-3 shrink-0">
                   {/* Status Indicator Bar */}
-                  <div className="bg-white border border-slate-200 rounded-xl p-3 flex items-center justify-between text-xs shadow-2xs">
-                    <span className="text-slate-500 font-bold">Dukungan Device:</span>
+                  <div className="bg-white border border-slate-200 rounded-xl p-2.5 flex items-center justify-between text-xs shadow-2xs">
+                    <span className="text-slate-500 font-bold text-[11px]">Dukungan Device:</span>
                     {isSupported ? (
-                      <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full font-bold flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        Web NFC &amp; USB Reader Active
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full font-bold text-[11px] flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        Web NFC &amp; USB Reader
                       </span>
                     ) : (
-                      <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full font-bold flex items-center gap-1.5">
-                        <Usb className="w-3.5 h-3.5 text-blue-600" />
-                        USB NFC Reader Active (Keyboard Mode)
+                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full font-bold text-[11px] flex items-center gap-1">
+                        <Usb className="w-3 h-3 text-blue-600" />
+                        USB NFC Reader Active
                       </span>
                     )}
                   </div>
 
                   {/* Only show warning if BOTH Web NFC is missing AND USB mode is off */}
                   {isSupported === false && !usbModeActive && (
-                    <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md shadow-sm">
+                    <div className="bg-red-50 border-l-4 border-red-500 p-3 rounded-md shadow-2xs">
                       <div className="flex">
-                        <div className="flex-shrink-0">
-                          <AlertCircle className="h-5 w-5 text-red-500" />
-                        </div>
-                        <div className="ml-3">
-                          <p className="text-sm text-red-700">
-                            Perangkat Anda tidak mendukung fitur Web NFC dan Mode USB Reader tidak aktif.
-                          </p>
-                        </div>
+                        <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mr-2" />
+                        <p className="text-xs text-red-700">
+                          Perangkat Anda tidak mendukung Web NFC dan USB Reader mati.
+                        </p>
                       </div>
                     </div>
                   )}
@@ -928,22 +953,22 @@ export default function NFCAttendanceApp() {
                   {/* Scan Card Container */}
                   <div
                     onClick={focusUsbInput}
-                    className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden flex flex-col cursor-pointer hover:border-blue-300 transition-colors"
+                    className="bg-white rounded-xl border border-slate-200 shadow-md overflow-hidden flex flex-col cursor-pointer hover:border-blue-300 transition-colors"
                   >
-                    <div className="bg-slate-50 p-3.5 border-b border-slate-100 flex items-center justify-between shrink-0">
-                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-                        <Usb className="w-4 h-4 text-[#203598]" />
+                    <div className="bg-slate-50 p-2.5 border-b border-slate-100 flex items-center justify-between shrink-0">
+                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                        <Usb className="w-3.5 h-3.5 text-[#203598]" />
                         Area Pemindaian Kartu NFC
                       </span>
-                      <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                         isUsbFocused ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
                       }`}>
                         {isUsbFocused ? "● Ready Tap USB" : "Klik untuk Fokus"}
                       </span>
                     </div>
 
-                    <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[280px]">
-                      <div className="w-40 h-40 bg-blue-50 rounded-full flex items-center justify-center relative mb-6">
+                    <div className="flex flex-col items-center justify-center p-4 text-center">
+                      <div className="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center relative mb-3">
                         {isScanning && (
                           <>
                             <div className="absolute inset-0 border-4 border-[#203598] opacity-10 rounded-full scale-110 animate-ping"></div>
@@ -951,17 +976,17 @@ export default function NFCAttendanceApp() {
                           </>
                         )}
                         <Nfc
-                          size={80}
+                          size={48}
                           className={`transition-colors duration-300 ${
                             isScanning ? "text-[#203598]" : "text-slate-400"
                           }`}
                         />
                       </div>
 
-                      <h2 className="text-2xl font-bold text-slate-900 mb-1">
+                      <h2 className="text-lg font-bold text-slate-900 mb-0.5">
                         {isScanning ? "Menunggu Kartu..." : "Silakan Tap Kartu NFC"}
                       </h2>
-                      <p className="text-slate-500 text-xs mb-6 max-w-[280px]">
+                      <p className="text-slate-500 text-[11px] mb-3 max-w-[240px]">
                         Tempelkan kartu NFC ke modul USB NFC Reader atau HP Android Anda.
                       </p>
 
@@ -973,10 +998,10 @@ export default function NFCAttendanceApp() {
                               e.stopPropagation();
                               handleScan();
                             }}
-                            className="w-full bg-[#203598] hover:bg-[#1a2c7d] text-white font-medium py-3 px-6 rounded-xl shadow-md shadow-[#203598]/20 transition-all flex items-center justify-center gap-2 text-sm"
+                            className="w-full bg-[#203598] hover:bg-[#1a2c7d] text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-all flex items-center justify-center gap-1.5 text-xs"
                           >
-                            <Activity size={18} />
-                            Mulai Scan Web NFC (Internal HP)
+                            <Activity size={15} />
+                            Mulai Scan Web NFC
                           </button>
                         ) : (
                           <button
@@ -984,7 +1009,7 @@ export default function NFCAttendanceApp() {
                               e.stopPropagation();
                               stopScan();
                             }}
-                            className="w-full bg-red-50 hover:bg-red-100 text-red-600 font-medium py-3 px-6 rounded-xl border border-red-200 transition-all flex items-center justify-center gap-2 text-sm"
+                            className="w-full bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2 px-4 rounded-lg border border-red-200 transition-all flex items-center justify-center gap-1.5 text-xs"
                           >
                             Batal Scan Web NFC
                           </button>
@@ -992,28 +1017,28 @@ export default function NFCAttendanceApp() {
                       ) : null}
 
                       {usbInputVal && (
-                        <div className="mt-4 px-3 py-1 bg-slate-900 text-emerald-400 font-mono text-xs rounded-md tracking-wider">
-                          Mengetik USB: {usbInputVal}█
+                        <div className="mt-2 px-2.5 py-1 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded tracking-wider">
+                          Mengetik: {usbInputVal}█
                         </div>
                       )}
 
                       {errorMsg && (
-                        <p className="mt-4 text-xs text-red-500 bg-red-50 py-2 px-3 rounded-lg w-full">
+                        <p className="mt-2 text-[11px] text-red-500 bg-red-50 py-1.5 px-2.5 rounded-md w-full">
                           {errorMsg}
                         </p>
                       )}
                     </div>
 
-                    <div className="p-4 bg-slate-900 shrink-0">
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">
+                    <div className="p-3 bg-slate-900 shrink-0 border-t border-slate-800">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">
                           UID Terakhir Terbaca
                         </span>
-                        <span className="px-2 py-0.5 text-[10px] rounded font-bold bg-green-500/20 text-green-400">
+                        <span className="px-1.5 py-0.2 text-[9px] rounded font-bold bg-green-500/20 text-green-400">
                           READY
                         </span>
                       </div>
-                      <div className="font-mono text-lg tracking-[0.2em] bg-black/40 p-3 rounded-lg border border-slate-800 shadow-inner text-center truncate text-[#00FF41]">
+                      <div className="font-mono text-base tracking-[0.15em] bg-black/40 p-2 rounded border border-slate-800 shadow-inner text-center truncate text-[#00FF41]">
                         {records.length > 0 ? records[0].serialNumber.toUpperCase() : "--:--:--:--:--"}
                       </div>
                     </div>
@@ -1022,42 +1047,42 @@ export default function NFCAttendanceApp() {
 
                 {/* Right Panel: Attendance Table */}
                 <section className="flex-1 flex flex-col min-w-0">
-                  <div className="flex justify-between items-end mb-4 shrink-0">
+                  <div className="flex justify-between items-end mb-2.5 shrink-0">
                     <div>
-                      <h2 className="text-xl font-bold text-slate-800">Daftar Kehadiran Hari Ini</h2>
+                      <h2 className="text-lg font-bold text-slate-800">Daftar Kehadiran Hari Ini</h2>
                       <p className="text-xs text-slate-500 mt-0.5">Sesi: <strong>{activeSession?.nama_sesi || "Umum"}</strong></p>
                     </div>
-                    <div className="flex gap-4">
-                      <div className="text-center">
-                        <div className="text-xs text-slate-400 uppercase font-bold">Total Hadir</div>
-                        <div className="text-xl font-bold text-[#203598]">{records.length}</div>
+                    <div className="flex gap-3">
+                      <div className="text-right">
+                        <div className="text-[10px] text-slate-400 uppercase font-bold">Total Hadir</div>
+                        <div className="text-lg font-bold text-[#203598]">{records.length}</div>
                       </div>
                     </div>
                   </div>
 
-                  <div className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
+                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden max-h-[380px] sm:max-h-[460px]">
                     {records.length === 0 ? (
-                      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center gap-3 bg-white">
-                        <div className="bg-slate-50 p-4 rounded-full text-slate-400">
-                          <Users size={32} />
+                      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center gap-2 bg-white min-h-[200px]">
+                        <div className="bg-slate-50 p-3 rounded-full text-slate-400">
+                          <Users size={28} />
                         </div>
-                        <p className="text-slate-500 text-sm">Belum ada riwayat absensi hari ini.</p>
+                        <p className="text-slate-500 text-xs">Belum ada riwayat absensi hari ini.</p>
                       </div>
                     ) : (
-                      <div className="flex-1 overflow-auto">
+                      <div className="overflow-y-auto max-h-[340px] sm:max-h-[420px]">
                         <table className="w-full border-collapse">
                           <thead>
                             <tr className="bg-slate-50 border-b border-slate-200 text-left sticky top-0 z-10">
-                              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-widest">
+                              <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                                 Foto
                               </th>
-                              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-widest">
+                              <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                                 Nama &amp; UID Kartu
                               </th>
-                              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-widest">
+                              <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                                 Waktu Tap
                               </th>
-                              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-widest">
+                              <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                                 Status
                               </th>
                             </tr>
@@ -1065,8 +1090,8 @@ export default function NFCAttendanceApp() {
                           <tbody className="divide-y divide-slate-100">
                             {records.map((record) => (
                               <tr key={record.id} className="hover:bg-slate-50/50 transition-colors">
-                                <td className="px-6 py-4">
-                                  <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 relative border border-slate-300 shadow-2xs">
+                                <td className="px-3.5 py-2">
+                                  <div className="w-8 h-8 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 relative border border-slate-300 shadow-2xs">
                                     {record.photoUrl ? (
                                       <Image
                                         src={record.photoUrl}
@@ -1078,28 +1103,28 @@ export default function NFCAttendanceApp() {
                                       />
                                     ) : (
                                       <div className="w-full h-full flex items-center justify-center text-slate-400">
-                                        <Users size={20} />
+                                        <Users size={16} />
                                       </div>
                                     )}
                                   </div>
                                 </td>
-                                <td className="px-6 py-4">
-                                  <div className="font-bold text-slate-900 text-sm">
+                                <td className="px-3.5 py-2">
+                                  <div className="font-bold text-slate-900 text-xs">
                                     {record.name || "Peserta NFC"}
                                   </div>
-                                  <div className="text-xs font-mono text-slate-500">
+                                  <div className="text-[10px] font-mono text-slate-500">
                                     UID: {record.serialNumber}
                                   </div>
                                 </td>
-                                <td className="px-6 py-4 text-sm text-slate-600 font-medium">
+                                <td className="px-3.5 py-2 text-xs text-slate-600 font-medium">
                                   {record.timestamp.toLocaleTimeString("id-ID", {
                                     hour: "2-digit",
                                     minute: "2-digit",
                                     second: "2-digit",
                                   })}
                                 </td>
-                                <td className="px-6 py-4">
-                                  <span className="px-3 py-1 bg-emerald-100 text-emerald-800 text-xs font-extrabold rounded-full uppercase">
+                                <td className="px-3.5 py-2">
+                                  <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-extrabold rounded-full uppercase">
                                     Hadir
                                   </span>
                                 </td>
@@ -1110,11 +1135,11 @@ export default function NFCAttendanceApp() {
                       </div>
                     )}
 
-                    <div className="mt-auto p-4 bg-slate-50 border-t border-slate-200 flex justify-center items-center gap-2 shrink-0">
-                      <span className="w-2 h-2 bg-slate-400 rounded-full"></span>
-                      <span className="w-2 h-2 bg-slate-300 rounded-full"></span>
-                      <span className="w-2 h-2 bg-slate-300 rounded-full"></span>
-                      <span className="text-slate-400 text-xs font-medium ml-2">Halaman 1</span>
+                    <div className="mt-auto p-2.5 bg-slate-50 border-t border-slate-200 flex justify-center items-center gap-1.5 shrink-0">
+                      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full"></span>
+                      <span className="w-1.5 h-1.5 bg-slate-300 rounded-full"></span>
+                      <span className="w-1.5 h-1.5 bg-slate-300 rounded-full"></span>
+                      <span className="text-slate-400 text-[10px] font-medium ml-1">Halaman 1</span>
                     </div>
                   </div>
                 </section>
