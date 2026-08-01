@@ -1,0 +1,6 @@
+{
+  "name": "Cinta Alam Indonesia 2026",
+  "description": "Sistem absensi menggunakan kartu NFC dengan membaca serial number.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
