@@ -242,6 +242,9 @@ export default function NFCAttendanceApp() {
 
     fetchInitialRecords();
 
+    // Auto-polling interval every 3 seconds for reliable multi-device sync
+    const pollInterval = setInterval(fetchInitialRecords, 3000);
+
     // Helper for adding realtime record
     const handleNewRecord = (newRec: any, source: string) => {
       const uidClean = hexToDecimal(String(newRec.serial_number || "").trim(), true);
@@ -289,6 +292,7 @@ export default function NFCAttendanceApp() {
 
     return () => {
       isMounted = false;
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
       supabase.removeChannel(channelKehadiran);
     };
