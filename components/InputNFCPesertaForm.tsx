@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Nfc, Search, Check, Save, AlertCircle, CheckCircle2, Copy, RefreshCw, UserCheck, Database, Code, Info } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { hexToDecimal } from "@/lib/utils";
 
 interface Peserta {
   id: number;
@@ -96,7 +97,7 @@ export default function InputNFCPesertaForm() {
 
       ndef.addEventListener("reading", ({ serialNumber }: any) => {
         if (serialNumber) {
-          const formattedUID = serialNumber.toUpperCase();
+          const formattedUID = hexToDecimal(serialNumber, true);
           setScannedUID(formattedUID);
           setIsScanning(false);
           setMessage({
@@ -145,7 +146,7 @@ export default function InputNFCPesertaForm() {
     setSaving(true);
     setMessage(null);
 
-    const uidClean = scannedUID.trim().toUpperCase();
+    const uidClean = hexToDecimal(scannedUID.trim(), true);
 
     try {
       // Upsert or Insert to nfc_peserta table
