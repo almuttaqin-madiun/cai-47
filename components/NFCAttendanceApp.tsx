@@ -172,6 +172,113 @@ export default function NFCAttendanceApp() {
     }
   }, [checkActiveSession]);
 
+  // Load and listen to realtime records
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchInitialRecords = async () => {
+      // Fetch latest 50 records from riwayat_absen
+      const { data, error } = await supabase
+        .from("riwayat_absen")
+        .select("*")
+        .order("timestamp", { ascending: false })
+        .limit(50);
+
+      if (error) {
+        console.warn("Gagal fetch riwayat_absen, mencoba kehadiran:", error);
+        // Fallback to kehadiran
+        const { data: dataKehadiran } = await supabase
+          .from("kehadiran")
+          .select("*")
+          .order("timestamp", { ascending: false })
+          .limit(50);
+          
+        if (dataKehadiran && isMounted) {
+           setRecords(
+            dataKehadiran.map((d: any) => ({
+              id: `keh-${d.id}`,
+              serialNumber: d.serial_number,
+              timestamp: new Date(d.timestamp),
+              status: "success",
+              name: d.nama,
+              photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${d.serial_number}.jpg`).data.publicUrl
+            }))
+          );
+        }
+        return;
+      }
+
+      if (data && isMounted) {
+        setRecords(
+          data.map((d: any) => ({
+            id: d.id.toString(),
+            serialNumber: d.serial_number,
+            timestamp: new Date(d.timestamp),
+            status: "success",
+            name: d.nama_peserta || d.nama,
+            photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${d.serial_number}.jpg`).data.publicUrl
+          }))
+        );
+      }
+    };
+
+    fetchInitialRecords();
+
+    // Subscribe to realtime inserts on riwayat_absen
+    const channel = supabase
+      .channel("public:riwayat_absen")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "riwayat_absen" },
+        (payload) => {
+          const newRec = payload.new as any;
+          setRecords((prev) => {
+            if (prev.some((r) => r.id === newRec.id.toString())) return prev;
+            const added: AttendanceRecord = {
+              id: newRec.id.toString(),
+              serialNumber: newRec.serial_number,
+              timestamp: new Date(newRec.timestamp),
+              status: "success",
+              name: newRec.nama_peserta || newRec.nama,
+              photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${newRec.serial_number}.jpg`).data.publicUrl
+            };
+            return [added, ...prev];
+          });
+        }
+      )
+      .subscribe();
+
+    // Subscribe to realtime inserts on kehadiran (fallback)
+    const channelKehadiran = supabase
+      .channel("public:kehadiran")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "kehadiran" },
+        (payload) => {
+          const newRec = payload.new as any;
+          setRecords((prev) => {
+            if (prev.some((r) => r.id === `keh-${newRec.id}`)) return prev;
+            const added: AttendanceRecord = {
+              id: `keh-${newRec.id}`,
+              serialNumber: newRec.serial_number,
+              timestamp: new Date(newRec.timestamp),
+              status: "success",
+              name: newRec.nama,
+              photoUrl: supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${newRec.serial_number}.jpg`).data.publicUrl
+            };
+            return [added, ...prev];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(channel);
+      supabase.removeChannel(channelKehadiran);
+    };
+  }, []);
+
   const processAbsenRecord = useCallback(
     async (uid: string) => {
       if (!uid || !uid.trim()) return;
@@ -389,17 +496,6 @@ export default function NFCAttendanceApp() {
       } catch (dbErr) {
         console.warn("Gagal simpan ke tabel kehadiran:", dbErr);
       }
-
-      const newRecord: AttendanceRecord = {
-        id: Math.random().toString(36).substring(7),
-        serialNumber: cleanUid,
-        timestamp: new Date(),
-        status: "success",
-        photoUrl: photoUrl,
-        name: namaPengguna,
-      };
-
-      setRecords((prev) => [newRecord, ...prev]);
 
       setToastMsg({
         type: "success",
