@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import SuccessDialog from "./SuccessDialog";
+import { hexToDecimal } from "@/lib/utils";
 import {
   Usb,
   CheckCircle2,

@@ -19,6 +19,7 @@ import {
   Volume2
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { hexToDecimal } from "@/lib/utils";
 import InputPesertaForm from "./InputPesertaForm";
 import DataPesertaTable from "./DataPesertaTable";
 import InputNFCPesertaForm from "./InputNFCPesertaForm";
@@ -174,7 +175,8 @@ export default function NFCAttendanceApp() {
   const processAbsenRecord = useCallback(
     async (uid: string) => {
       if (!uid || !uid.trim()) return;
-      const cleanUid = uid.trim();
+      // Standarisasi: Pastikan UID diubah ke desimal jika berupa format hex (misal 31:79:E8:A7)
+      const cleanUid = hexToDecimal(uid.trim(), true);
 
       // Sound feedback
       try {
@@ -448,8 +450,10 @@ export default function NFCAttendanceApp() {
       setErrorMsg(null);
 
       ndef.addEventListener("reading", async ({ serialNumber }: any) => {
-        const uid = serialNumber || "Tidak diketahui";
-        await processAbsenRecord(uid);
+        const rawUid = serialNumber || "Tidak diketahui";
+        // Standarisasi: Konversi hex Android (contoh "31:79:E8:A7") ke desimal murni ("2817030449")
+        const decimalUid = hexToDecimal(rawUid, true);
+        await processAbsenRecord(decimalUid);
       });
 
       ndef.addEventListener("readingerror", () => {
