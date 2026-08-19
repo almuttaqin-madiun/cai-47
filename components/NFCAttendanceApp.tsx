@@ -16,21 +16,28 @@ import {
   ChevronDown,
   Usb,
   CheckCircle2,
-  Volume2
+  Volume2,
+  PieChart,
+  Clock
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { hexToDecimal } from "@/lib/utils";
 import InputPesertaForm from "./InputPesertaForm";
 import DataPesertaTable from "./DataPesertaTable";
 import InputNFCPesertaForm from "./InputNFCPesertaForm";
-import ManajemenSesi, { SesiAbsensi } from "./ManajemenSesi";
+import ManajemenSesi, { SesiAbsensi, calculateWaktuTelat } from "./ManajemenSesi";
+import RekapPresensi from "./RekapPresensi";
 import SuccessDialog from "./SuccessDialog";
+import PlottingPeserta from "./PlottingPeserta";
+import StatistikKehadiran from "./StatistikKehadiran";
 
 interface AttendanceRecord {
   id: string;
   serialNumber: string;
   timestamp: Date;
   status: "success" | "error";
+  statusKehadiran?: string;
+  menitTerlambat?: number;
   photoUrl?: string;
   name?: string;
 }
@@ -73,7 +80,9 @@ function getUidCandidates(input: string): string[] {
 }
 
 export default function NFCAttendanceApp() {
-  const [activeTab, setActiveTab] = useState<"presensi" | "input" | "peserta" | "nfc" | "sesi">("presensi");
+  const [activeTab, setActiveTab] = useState<
+    "presensi" | "input" | "peserta" | "nfc" | "plotting_tenda" | "plotting_fgd" | "sesi" | "jadwal_materi" | "jadwal_makan" | "jadwal_sholat" | "rekap_presensi" | "statistik"
+  >("presensi");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
@@ -92,6 +101,8 @@ export default function NFCAttendanceApp() {
     nama?: string;
     serialNumber?: string;
     sesiNama?: string;
+    statusKehadiran?: string;
+    menitTerlambat?: number;
     photoUrl?: string;
   }>({
     isOpen: false,
@@ -130,18 +141,28 @@ export default function NFCAttendanceApp() {
   const checkActiveSession = useCallback(async () => {
     try {
       let sessions: SesiAbsensi[] = [];
-      const { data, error } = await supabase
-        .from("sesi_absensi")
-        .select("*")
-        .eq("is_active", true);
+      const [resJadwal, resSesi] = await Promise.all([
+        supabase.from("jadwal_absensi").select("*").eq("is_active", true),
+        supabase.from("sesi_absensi").select("*").eq("is_active", true),
+      ]);
 
-      if (error || !data || data.length === 0) {
+      const combined: SesiAbsensi[] = [];
+      if (resJadwal.data) combined.push(...resJadwal.data);
+      if (resSesi.data) {
+        for (const s of resSesi.data) {
+          if (!combined.some((c) => c.id === s.id && c.nama_sesi === s.nama_sesi)) {
+            combined.push(s);
+          }
+        }
+      }
+
+      if (combined.length === 0) {
         const localData = typeof window !== "undefined" ? localStorage.getItem("cai_sesi_absensi") : null;
         if (localData) {
           sessions = JSON.parse(localData).filter((s: SesiAbsensi) => s.is_active);
         }
       } else {
-        sessions = data;
+        sessions = combined;
       }
 
       const now = new Date();
@@ -397,6 +418,14 @@ export default function NFCAttendanceApp() {
         console.warn("Gagal fetch peserta:", err);
       }
 
+      // Determine current session/category type (makan/sholat/materi)
+      let currentJadwal = activeSession?.jadwal || activeSession?.kategori || "materi";
+      if (!activeSession) {
+        if (activeTab === "jadwal_makan") currentJadwal = "makan";
+        else if (activeTab === "jadwal_sholat") currentJadwal = "sholat";
+        else currentJadwal = "materi";
+      }
+
       // Fallback: Call server API route /api/absen if client-side search returned empty
       if (!namaPengguna) {
         try {
@@ -406,6 +435,8 @@ export default function NFCAttendanceApp() {
             body: JSON.stringify({
               serial_number: cleanUid,
               sesi_nama: activeSession?.nama_sesi || "Umum",
+              jadwal: currentJadwal,
+              kategori: currentJadwal,
             }),
           });
           const apiResData = await res.json();
@@ -502,7 +533,32 @@ export default function NFCAttendanceApp() {
 
       const photoUrl = publicUrlData?.publicUrl;
 
-      // 3. Save to database (Save to riwayat_absen & kehadiran)
+      // 3. Determine Late Status based on Active Session & Waktu Telat
+      let statusKehadiran = "Tepat Waktu";
+      let menitTerlambat = 0;
+      let batasJamTelat = "";
+
+      if (activeSession) {
+        const start = activeSession.jam_mulai ? activeSession.jam_mulai.slice(0, 5) : "08:00";
+        const toleransi = typeof activeSession.toleransi_menit === "number" ? activeSession.toleransi_menit : 15;
+        batasJamTelat = activeSession.waktu_telat
+          ? activeSession.waktu_telat.slice(0, 5)
+          : calculateWaktuTelat(start, toleransi);
+
+        const now = new Date();
+        const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
+        const [bH, bM] = batasJamTelat.split(":").map(Number);
+        const batasTotalMinutes = bH * 60 + bM;
+        const [stH, stM] = start.split(":").map(Number);
+        const startTotalMinutes = stH * 60 + stM;
+
+        if (currentTotalMinutes > batasTotalMinutes) {
+          statusKehadiran = "Terlambat";
+          menitTerlambat = Math.max(0, currentTotalMinutes - startTotalMinutes);
+        }
+      }
+
+      // 4. Save to database (Save to riwayat_absen & kehadiran)
       try {
         const timestampNow = new Date().toISOString();
         const sesiNamaNow = activeSession?.nama_sesi || "Umum";
@@ -512,10 +568,41 @@ export default function NFCAttendanceApp() {
             serial_number: cleanUid,
             nama_peserta: namaPengguna,
             sesi_nama: sesiNamaNow,
+            jadwal: currentJadwal,
+            kategori: currentJadwal,
             status: "Hadir",
+            status_kehadiran: statusKehadiran,
+            menit_terlambat: menitTerlambat,
+            waktu_telat: batasJamTelat,
             timestamp: timestampNow,
           },
         ]);
+
+        if (rErr) {
+          // Retry without extra columns if not present in Supabase table
+          const { error: rErr2 } = await supabase.from("riwayat_absen").insert([
+            {
+              serial_number: cleanUid,
+              nama_peserta: namaPengguna,
+              sesi_nama: sesiNamaNow,
+              jadwal: currentJadwal,
+              kategori: currentJadwal,
+              status: "Hadir",
+              timestamp: timestampNow,
+            },
+          ]);
+          if (rErr2) {
+            await supabase.from("riwayat_absen").insert([
+              {
+                serial_number: cleanUid,
+                nama_peserta: namaPengguna,
+                sesi_nama: sesiNamaNow,
+                status: "Hadir",
+                timestamp: timestampNow,
+              },
+            ]);
+          }
+        }
 
         const { error: kErr } = await supabase.from("kehadiran").insert([
           {
@@ -523,19 +610,56 @@ export default function NFCAttendanceApp() {
             nama: namaPengguna,
             timestamp: timestampNow,
             sesi_nama: sesiNamaNow,
+            jadwal: currentJadwal,
+            kategori: currentJadwal,
+            status_kehadiran: statusKehadiran,
+            menit_terlambat: menitTerlambat,
+            waktu_telat: batasJamTelat,
           },
         ]);
 
-        if (rErr && kErr) {
-          console.warn("Gagal simpan ke riwayat_absen & kehadiran:", rErr, kErr);
+        if (kErr) {
+          const { error: kErr2 } = await supabase.from("kehadiran").insert([
+            {
+              serial_number: cleanUid,
+              nama: namaPengguna,
+              timestamp: timestampNow,
+              sesi_nama: sesiNamaNow,
+              jadwal: currentJadwal,
+              kategori: currentJadwal,
+            },
+          ]);
+          if (kErr2) {
+            await supabase.from("kehadiran").insert([
+              {
+                serial_number: cleanUid,
+                nama: namaPengguna,
+                timestamp: timestampNow,
+                sesi_nama: sesiNamaNow,
+              },
+            ]);
+          }
         }
       } catch (dbErr) {
         console.warn("Gagal simpan ke database presensi:", dbErr);
       }
 
+      // Add to local live session records list
+      const newAttendanceRecord: AttendanceRecord = {
+        id: `${Date.now()}-${Math.random()}`,
+        serialNumber: cleanUid,
+        name: namaPengguna,
+        timestamp: new Date(),
+        status: "success",
+        statusKehadiran: statusKehadiran,
+        menitTerlambat: menitTerlambat,
+        photoUrl: photoUrl,
+      };
+      setRecords((prev) => [newAttendanceRecord, ...prev.slice(0, 49)]);
+
       setToastMsg({
         type: "success",
-        text: `Presensi Berhasil! ${namaPengguna} (UID: ${cleanUid})`,
+        text: `Presensi Berhasil! ${namaPengguna} (${statusKehadiran === "Terlambat" ? `Terlambat +${menitTerlambat}m` : "Tepat Waktu"})`,
       });
 
       setDialogState({
@@ -546,6 +670,8 @@ export default function NFCAttendanceApp() {
         nama: namaPengguna,
         serialNumber: cleanUid,
         sesiNama: activeSession?.nama_sesi || "Umum",
+        statusKehadiran: statusKehadiran,
+        menitTerlambat: menitTerlambat,
         photoUrl: photoUrl,
       });
 
@@ -602,9 +728,13 @@ export default function NFCAttendanceApp() {
   }, []);
 
   const [expandedMenus, setExpandedMenus] = useState<Record<string, boolean>>({
+    statistik: true,
     peserta: false,
     registrasi: false,
-    sesi: false,
+    plotting: true,
+    jadwal: true,
+    sesi: true,
+    rekap: true,
   });
 
   const toggleSubmenu = (menuKey: string) => {
@@ -714,6 +844,29 @@ export default function NFCAttendanceApp() {
               </button>
             </div>
 
+            {/* Statistik Kehadiran (Donut Chart) */}
+            <div className="space-y-1">
+              <button
+                onClick={() => {
+                  setActiveTab("statistik");
+                  setIsMobileOpen(false);
+                }}
+                className={`w-full px-3.5 py-2.5 rounded-xl text-left font-bold text-sm transition-all flex items-center justify-between ${
+                  activeTab === "statistik"
+                    ? "bg-[#203598] text-white shadow-md shadow-[#203598]/20"
+                    : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <PieChart className="w-4 h-4 text-emerald-500" />
+                  <span>Statistik Sesi</span>
+                </div>
+                <span className="text-[10px] font-extrabold bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-md">
+                  Donat
+                </span>
+              </button>
+            </div>
+
             {/* Peserta */}
             <div className="space-y-1">
               <button
@@ -793,34 +946,161 @@ export default function NFCAttendanceApp() {
               )}
             </div>
 
-            {/* Sesi */}
+            {/* Plotting */}
             <div className="space-y-1">
               <button
-                onClick={() => toggleSubmenu("sesi")}
+                onClick={() => toggleSubmenu("plotting")}
                 className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
               >
-                <span>Sesi</span>
+                <span>Plotting</span>
                 <ChevronDown
                   className={`w-4 h-4 text-slate-400 transition-transform ${
-                    expandedMenus.sesi ? "rotate-180" : ""
+                    expandedMenus.plotting ? "rotate-180" : ""
                   }`}
                 />
               </button>
 
-              {expandedMenus.sesi && (
+              {expandedMenus.plotting && (
                 <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
                   <button
                     onClick={() => {
-                      setActiveTab("sesi");
+                      setActiveTab("plotting_tenda");
                       setIsMobileOpen(false);
                     }}
                     className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "sesi"
+                      activeTab === "plotting_tenda"
                         ? "bg-[#203598] text-white shadow-sm"
                         : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
                     }`}
                   >
-                    Manajemen Sesi
+                    Tenda
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("plotting_fgd");
+                      setIsMobileOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
+                      activeTab === "plotting_fgd"
+                        ? "bg-[#203598] text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    }`}
+                  >
+                    FGD
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Jadwal */}
+            <div className="space-y-1">
+              <button
+                onClick={() => {
+                  toggleSubmenu("jadwal");
+                  toggleSubmenu("sesi");
+                }}
+                className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
+              >
+                <span>Jadwal</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-400 transition-transform ${
+                    expandedMenus.jadwal || expandedMenus.sesi ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              {(expandedMenus.jadwal || expandedMenus.sesi) && (
+                <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                  <button
+                    onClick={() => {
+                      setActiveTab("jadwal_materi");
+                      setIsMobileOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
+                      activeTab === "jadwal_materi" || activeTab === "sesi"
+                        ? "bg-[#203598] text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    }`}
+                  >
+                    Materi
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("jadwal_makan");
+                      setIsMobileOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
+                      activeTab === "jadwal_makan"
+                        ? "bg-[#203598] text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    }`}
+                  >
+                    Makan
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("jadwal_sholat");
+                      setIsMobileOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
+                      activeTab === "jadwal_sholat"
+                        ? "bg-[#203598] text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    }`}
+                  >
+                    Sholat
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Rekap */}
+            <div className="space-y-1">
+              <button
+                onClick={() => toggleSubmenu("rekap")}
+                className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
+              >
+                <span>Rekap</span>
+                <ChevronDown
+                  className={`w-4 h-4 text-slate-400 transition-transform ${
+                    expandedMenus.rekap ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              {expandedMenus.rekap && (
+                <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                  <button
+                    onClick={() => {
+                      setActiveTab("rekap_presensi");
+                      setIsMobileOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
+                      activeTab === "rekap_presensi"
+                        ? "bg-[#203598] text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    }`}
+                  >
+                    Presensi
+                  </button>
+                  <button
+                    onClick={() => {
+                      setActiveTab("statistik");
+                      setIsMobileOpen(false);
+                    }}
+                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all flex items-center justify-between ${
+                      activeTab === "statistik"
+                        ? "bg-[#203598] text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    }`}
+                  >
+                    <span>Statistik Kehadiran</span>
+                    <span className="text-[9px] bg-emerald-500 text-white font-bold px-1 py-0.5 rounded">
+                      Donat
+                    </span>
                   </button>
                 </div>
               )}
@@ -837,9 +1117,23 @@ export default function NFCAttendanceApp() {
 
         {/* Main Content Area */}
         <main className="flex-1 p-3 md:p-5 max-w-7xl mx-auto w-full overflow-y-auto">
-          {activeTab === "sesi" && <ManajemenSesi />}
+          {activeTab === "statistik" && <StatistikKehadiran />}
+
+          {activeTab === "rekap_presensi" && <RekapPresensi />}
+
+          {(activeTab === "sesi" || activeTab === "jadwal_materi") && (
+            <ManajemenSesi kategori="materi" />
+          )}
+
+          {activeTab === "jadwal_makan" && <ManajemenSesi kategori="makan" />}
+
+          {activeTab === "jadwal_sholat" && <ManajemenSesi kategori="sholat" />}
 
           {activeTab === "nfc" && <InputNFCPesertaForm />}
+
+          {activeTab === "plotting_tenda" && <PlottingPeserta type="tenda" />}
+
+          {activeTab === "plotting_fgd" && <PlottingPeserta type="fgd" />}
 
           {activeTab === "input" && (
             <InputPesertaForm onGoToData={() => setActiveTab("peserta")} />
@@ -878,9 +1172,21 @@ export default function NFCAttendanceApp() {
                         <div className="text-sm font-bold text-emerald-950">
                           {activeSession.nama_sesi}
                         </div>
-                        <div className="text-xs text-emerald-700 font-medium">
-                          Jam {activeSession.jam_mulai.slice(0, 5)} - {activeSession.jam_selesai.slice(0, 5)} WIB
-                          {activeSession.keterangan ? ` • ${activeSession.keterangan}` : ""}
+                        <div className="text-xs text-emerald-700 font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span>
+                            Jam {activeSession.jam_mulai.slice(0, 5)} - {activeSession.jam_selesai.slice(0, 5)} WIB
+                          </span>
+                          {(() => {
+                            const toleransi = typeof activeSession.toleransi_menit === "number" ? activeSession.toleransi_menit : 15;
+                            const batas = activeSession.waktu_telat ? activeSession.waktu_telat.slice(0, 5) : calculateWaktuTelat(activeSession.jam_mulai.slice(0, 5), toleransi);
+                            return (
+                              <span className="inline-flex items-center gap-1 font-semibold text-amber-900 bg-amber-100/90 border border-amber-300/80 px-2 py-0.5 rounded-md text-[11px]">
+                                <Clock className="w-3 h-3 text-amber-700" />
+                                Batas Telat: {batas} WIB (+{toleransi}m)
+                              </span>
+                            );
+                          })()}
+                          {activeSession.keterangan ? <span>• {activeSession.keterangan}</span> : null}
                         </div>
                       </div>
                     </div>
@@ -1128,9 +1434,18 @@ export default function NFCAttendanceApp() {
                                   })}
                                 </td>
                                 <td className="px-3.5 py-2">
-                                  <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-extrabold rounded-full uppercase">
-                                    Hadir
-                                  </span>
+                                  {record.statusKehadiran === "Terlambat" ? (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-amber-100 text-amber-900 border border-amber-300/80 text-[10px] font-extrabold rounded-full uppercase">
+                                      <span>Terlambat</span>
+                                      {record.menitTerlambat && record.menitTerlambat > 0 ? (
+                                        <span className="text-[9px] font-mono opacity-80">(+{record.menitTerlambat}m)</span>
+                                      ) : null}
+                                    </span>
+                                  ) : (
+                                    <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-extrabold rounded-full uppercase">
+                                      Tepat Waktu
+                                    </span>
+                                  )}
                                 </td>
                               </tr>
                             ))}
@@ -1162,6 +1477,8 @@ export default function NFCAttendanceApp() {
         nama={dialogState.nama}
         serialNumber={dialogState.serialNumber}
         sesiNama={dialogState.sesiNama}
+        statusKehadiran={dialogState.statusKehadiran}
+        menitTerlambat={dialogState.menitTerlambat}
         photoUrl={dialogState.photoUrl}
         onClose={() => {
           setDialogState((prev) => ({ ...prev, isOpen: false }));

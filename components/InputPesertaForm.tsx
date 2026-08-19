@@ -1,7 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { UserPlus, CheckCircle2, AlertCircle, Loader2, ArrowRight, Building2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import {
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  UserPlus,
+  Users,
+  Check,
+  ChevronDown,
+  User,
+  Building2,
+  Tent,
+  MessageSquare,
+  ShieldAlert,
+} from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface InputPesertaFormProps {
@@ -10,211 +23,432 @@ interface InputPesertaFormProps {
 }
 
 export default function InputPesertaForm({ onSuccess, onGoToData }: InputPesertaFormProps) {
+  // Form fields as requested
   const [nama, setNama] = useState("");
+  const [jenisKelamin, setJenisKelamin] = useState("");
   const [kelompok, setKelompok] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [recentAdded, setRecentAdded] = useState<{ id: number | string; nama: string; kelompok: string }[]>([]);
+  const [dapukan, setDapukan] = useState("");
+  const [grup, setGrup] = useState("");
+  const [grupFgd, setGrupFgd] = useState("");
 
+  // Existing suggestions
+  const [kelompokOptions, setKelompokOptions] = useState<string[]>([]);
+  const [grupOptions, setGrupOptions] = useState<string[]>([]);
+  const [fgdOptions, setFgdOptions] = useState<string[]>([]);
+
+  // State status
+  const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [submittedData, setSubmittedData] = useState<any>(null);
+
+  // Fetch existing options for convenience suggestions
+  useEffect(() => {
+    async function fetchExistingOptions() {
+      try {
+        const { data } = await supabase
+          .from("peserta")
+          .select("*");
+        
+        if (data && data.length > 0) {
+          const uniqueKelompok = Array.from(
+            new Set(data.map((p: any) => p.kelompok).filter((k) => k && k !== "-" && k.trim() !== ""))
+          );
+          const uniqueGrup = Array.from(
+            new Set(data.map((p: any) => p.grup || p.tenda).filter((t) => t && t !== "-" && t.trim() !== ""))
+          );
+          const uniqueFgd = Array.from(
+            new Set(data.map((p: any) => p.grup_fgd).filter((f) => f && f !== "-" && f.trim() !== ""))
+          );
+
+          setKelompokOptions(uniqueKelompok);
+          setGrupOptions(uniqueGrup);
+          setFgdOptions(uniqueFgd);
+        }
+      } catch (e) {
+        console.error("Error fetching suggestions:", e);
+      }
+    }
+    fetchExistingOptions();
+  }, []);
+
+  // Handle Submit
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage(null);
+
+    // Validasi Wajib Diisi
     if (!nama.trim()) {
-      setMessage({ type: "error", text: "Nama peserta wajib diisi." });
+      setErrorMessage("Nama Lengkap wajib diisi.");
+      return;
+    }
+    if (!jenisKelamin) {
+      setErrorMessage("Jenis Kelamin wajib dipilih.");
+      return;
+    }
+    if (!kelompok.trim()) {
+      setErrorMessage("Kelompok wajib diisi.");
+      return;
+    }
+    if (!dapukan.trim()) {
+      setErrorMessage("Dapukan wajib diisi.");
       return;
     }
 
     setLoading(true);
-    setMessage(null);
+
+    const cleanGrup = grup.trim() || "-";
+    const payload: any = {
+      nama: nama.trim(),
+      kelompok: kelompok.trim(),
+      dapukan: dapukan.trim(),
+      grup: cleanGrup,
+      tenda: cleanGrup,
+      grup_fgd: grupFgd.trim() || "-",
+      jenis_kelamin: jenisKelamin,
+    };
 
     try {
       let insertedRow: any = null;
 
-      // Primary attempt with select()
+      // Attempt 1: Try with full payload (grup, tenda, jenis_kelamin)
       const { data, error } = await supabase
         .from("peserta")
-        .insert([{ nama: nama.trim(), kelompok: kelompok.trim() || "-" }])
+        .insert([payload])
         .select();
 
       if (error) {
-        // Fallback: try insert without select() in case select permission is restricted
-        const { error: fallbackError } = await supabase
-          .from("peserta")
-          .insert([{ nama: nama.trim(), kelompok: kelompok.trim() || "-" }]);
+        // Fallback 1: Try without 'grup' (if table only has 'tenda')
+        const payloadOnlyTenda = { ...payload };
+        delete payloadOnlyTenda.grup;
+        const resTenda = await supabase.from("peserta").insert([payloadOnlyTenda]).select();
 
-        if (fallbackError) {
-          throw fallbackError;
+        if (resTenda.error) {
+          // Fallback 2: Try without 'tenda' (if table only has 'grup')
+          const payloadOnlyGrup = { ...payload };
+          delete payloadOnlyGrup.tenda;
+          const resGrup = await supabase.from("peserta").insert([payloadOnlyGrup]).select();
+
+          if (resGrup.error) {
+            // Fallback 3: Basic insert without select
+            const basicPayload = {
+              nama: nama.trim(),
+              kelompok: kelompok.trim(),
+              dapukan: dapukan.trim(),
+              grup_fgd: grupFgd.trim() || "-",
+            };
+            const { error: basicErr } = await supabase.from("peserta").insert([basicPayload]);
+            if (basicErr) throw basicErr;
+          } else if (resGrup.data && resGrup.data.length > 0) {
+            insertedRow = resGrup.data[0];
+          }
+        } else if (resTenda.data && resTenda.data.length > 0) {
+          insertedRow = resTenda.data[0];
         }
       } else if (data && data.length > 0) {
         insertedRow = data[0];
       }
 
-      setMessage({
-        type: "success",
-        text: `Peserta "${nama.trim()}" berhasil disimpan ke tabel peserta!`,
+      setSubmittedData({
+        id: insertedRow?.id || Date.now(),
+        ...payload,
+        grup: cleanGrup,
+        jenisKelamin,
       });
 
-      if (insertedRow) {
-        setRecentAdded((prev) => [insertedRow, ...prev]);
-      } else {
-        setRecentAdded((prev) => [{ id: Date.now(), nama: nama.trim(), kelompok: kelompok.trim() || "-" }, ...prev]);
-      }
-
-      // Reset form
-      setNama("");
-      setKelompok("");
+      setIsSubmitted(true);
 
       if (onSuccess) {
         onSuccess();
       }
     } catch (err: any) {
       console.error("Error inserting peserta:", err);
-
-      let errDetail = err.message || "Gagal menyimpan data peserta.";
+      let errDetail = err.message || "Gagal menyimpan data pendaftaran.";
       if (err.code === "42501" || errDetail.toLowerCase().includes("row-level security")) {
-        errDetail = "Akses ditolak oleh Row Level Security (RLS) Supabase. Di dashboard Supabase, masuk ke Table Editor > 'peserta' > tambahkan RLS policy (Allow ALL/Enable read and write access for all users) atau Disable RLS.";
-      } else if (err.hint) {
-        errDetail += ` (${err.hint})`;
-      } else if (err.details) {
-        errDetail += ` (${err.details})`;
+        errDetail = "Akses ditolak oleh Row Level Security (RLS) Supabase. Pastikan akses read & write diaktifkan untuk tabel 'peserta'.";
       }
-
-      setMessage({
-        type: "error",
-        text: errDetail,
-      });
+      setErrorMessage(errDetail);
     } finally {
       setLoading(false);
     }
   };
 
+  const resetForm = () => {
+    setNama("");
+    setJenisKelamin("");
+    setKelompok("");
+    setDapukan("");
+    setGrup("");
+    setGrupFgd("");
+    setIsSubmitted(false);
+    setSubmittedData(null);
+    setErrorMessage(null);
+  };
+
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-6">
-      {/* Header Banner */}
-      <div className="bg-[#203598] text-white p-6 rounded-2xl shadow-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+    <div className="w-full max-w-4xl mx-auto space-y-6 font-sans text-slate-800 pb-16">
+      {/* 1. PAGE TITLE */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
-          <div className="flex items-center gap-2 mb-1">
-            <UserPlus className="h-6 w-6 text-blue-200" />
-            <h2 className="text-xl font-bold">Input Data Peserta Baru</h2>
-          </div>
-          <p className="text-blue-100 text-sm">
-            Tambahkan nama dan kelompok peserta ke dalam database tabel peserta
+          <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+            Pendaftaran Peserta
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Silakan lengkapi formulir pendaftaran peserta di bawah ini. Tanda (<span className="text-rose-500 font-bold">*</span>) wajib diisi.
           </p>
         </div>
+
         {onGoToData && (
           <button
             onClick={onGoToData}
-            className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-semibold transition-all flex items-center gap-2 backdrop-blur-sm border border-white/20"
+            className="self-start sm:self-auto px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl border border-slate-300 shadow-2xs transition-all active:scale-95 flex items-center gap-2"
           >
-            Lihat Data Peserta
-            <ArrowRight className="w-4 h-4" />
+            <Users className="w-4 h-4 text-[#1d4ed8]" />
+            <span>Lihat Data Peserta</span>
           </button>
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Form Card */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-          {message && (
-            <div
-              className={`mb-6 p-4 rounded-xl flex items-start gap-3 border ${
-                message.type === "success"
-                  ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-                  : "bg-red-50 border-red-200 text-red-800"
-              }`}
+      {/* SUCCESS CARD */}
+      {isSubmitted ? (
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-8 md:p-12 shadow-xs text-center space-y-6 animate-in zoom-in-95 duration-200">
+          <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto shadow-xs">
+            <CheckCircle2 className="w-10 h-10" />
+          </div>
+
+          <div className="space-y-2">
+            <h2 className="text-xl md:text-2xl font-extrabold text-slate-900">
+              Pendaftaran Berhasil Disimpan!
+            </h2>
+            <p className="text-xs md:text-sm text-slate-500 max-w-md mx-auto">
+              Data peserta <strong>{submittedData?.nama}</strong> telah berhasil ditambahkan ke dalam database.
+            </p>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 max-w-lg mx-auto text-left text-xs space-y-2.5">
+            <div className="flex justify-between border-b border-slate-200/70 pb-2">
+              <span className="text-slate-500">Nama Lengkap:</span>
+              <span className="font-bold text-slate-800">{submittedData?.nama}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-200/70 pb-2">
+              <span className="text-slate-500">Jenis Kelamin:</span>
+              <span className="font-semibold text-slate-800">{submittedData?.jenisKelamin || "-"}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-200/70 pb-2">
+              <span className="text-slate-500">Kelompok:</span>
+              <span className="font-semibold text-slate-800">{submittedData?.kelompok}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-200/70 pb-2">
+              <span className="text-slate-500">Dapukan:</span>
+              <span className="font-semibold text-slate-800">{submittedData?.dapukan}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-200/70 pb-2">
+              <span className="text-slate-500">Grup:</span>
+              <span className="font-semibold text-slate-800">{submittedData?.grup || submittedData?.tenda || "-"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Grup FGD:</span>
+              <span className="font-semibold text-slate-800">{submittedData?.grup_fgd || "-"}</span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <button
+              onClick={resetForm}
+              className="px-5 py-2.5 bg-[#1d4ed8] hover:bg-[#1e40af] text-white text-xs font-bold rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-2"
             >
-              {message.type === "success" ? (
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-              )}
-              <div className="text-sm font-medium">{message.text}</div>
-            </div>
-          )}
+              <UserPlus className="w-4 h-4" />
+              <span>Daftarkan Peserta Lain</span>
+            </button>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                Nama Lengkap Peserta <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={nama}
-                onChange={(e) => setNama(e.target.value)}
-                placeholder="ketik nama"
-                required
-                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#203598]/20 focus:border-[#203598] text-slate-800 placeholder-slate-400 font-medium transition-all text-sm"
-              />
-            </div>
+            {onGoToData && (
+              <button
+                onClick={onGoToData}
+                className="px-5 py-2.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl border border-slate-300 shadow-2xs transition-all active:scale-95 flex items-center gap-2"
+              >
+                <Users className="w-4 h-4 text-[#1d4ed8]" />
+                <span>Buka Daftar Peserta</span>
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* 2. REGISTRATION FORM CARD */
+        <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden">
+          <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-6">
+            {/* Error Message */}
+            {errorMessage && (
+              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-start gap-2.5 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
 
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                Kelompok / Utusan
-              </label>
-              <div className="relative">
+            {/* FORM FIELDS GRID */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* 1. NAMA LENGKAP (Wajib) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-800">
+                  Nama Lengkap<span className="text-rose-500">*</span>
+                </label>
                 <input
                   type="text"
-                  value={kelompok}
-                  onChange={(e) => setKelompok(e.target.value)}
-                  placeholder="ketik asal kelompok"
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#203598]/20 focus:border-[#203598] text-slate-800 placeholder-slate-400 font-medium transition-all text-sm"
+                  placeholder="Masukkan nama lengkap peserta"
+                  value={nama}
+                  onChange={(e) => setNama(e.target.value)}
+                  required
+                  className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-xs md:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8]"
                 />
+              </div>
+
+              {/* 2. JENIS KELAMIN (Wajib) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-800">
+                  Jenis Kelamin<span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <select
+                    value={jenisKelamin}
+                    onChange={(e) => setJenisKelamin(e.target.value)}
+                    required
+                    className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-xs md:text-sm text-slate-800 focus:outline-none focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8] appearance-none cursor-pointer"
+                  >
+                    <option value="">Pilih Jenis Kelamin</option>
+                    <option value="Laki-laki">Laki-laki</option>
+                    <option value="Perempuan">Perempuan</option>
+                  </select>
+                  <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                    <ChevronDown className="w-4 h-4" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. KELOMPOK (Wajib) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-800">
+                  Kelompok<span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    list="kelompok-list"
+                    placeholder="Contoh: Kelompok A, Kelompok 01, Desa Barat"
+                    value={kelompok}
+                    onChange={(e) => setKelompok(e.target.value)}
+                    required
+                    className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-xs md:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8]"
+                  />
+                  <datalist id="kelompok-list">
+                    {kelompokOptions.map((k) => (
+                      <option key={k} value={k} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              {/* 4. DAPUKAN (Wajib) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-800">
+                  Dapukan<span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    list="dapukan-list"
+                    placeholder="Contoh: Peserta, Panitia, Keamanan, Konsumsi"
+                    value={dapukan}
+                    onChange={(e) => setDapukan(e.target.value)}
+                    required
+                    className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-xs md:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8]"
+                  />
+                  <datalist id="dapukan-list">
+                    <option value="Peserta" />
+                    <option value="Ketua Kelompok" />
+                    <option value="Panitia" />
+                    <option value="Pengurus" />
+                    <option value="Konsumsi" />
+                    <option value="Keamanan" />
+                    <option value="Kesehatan" />
+                  </datalist>
+                </div>
+              </div>
+
+              {/* 5. GRUP (Opsional) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-800">
+                  Grup <span className="text-slate-400 font-normal">(Opsional)</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    list="grup-list"
+                    placeholder="Contoh: Grup 01, Grup Putra A"
+                    value={grup}
+                    onChange={(e) => setGrup(e.target.value)}
+                    className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-xs md:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8]"
+                  />
+                  <datalist id="grup-list">
+                    {grupOptions.map((g) => (
+                      <option key={g} value={g} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              {/* 6. GRUP FGD (Opsional) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-800">
+                  Grup FGD <span className="text-slate-400 font-normal">(Opsional)</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    list="fgd-list"
+                    placeholder="Contoh: FGD 01, FGD A"
+                    value={grupFgd}
+                    onChange={(e) => setGrupFgd(e.target.value)}
+                    className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-xs md:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8]"
+                  />
+                  <datalist id="fgd-list">
+                    {fgdOptions.map((f) => (
+                      <option key={f} value={f} />
+                    ))}
+                  </datalist>
+                </div>
               </div>
             </div>
 
-            <div className="pt-2 flex items-center gap-3">
+            {/* ACTION BUTTONS */}
+            <div className="pt-6 flex items-center justify-end gap-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={resetForm}
+                className="px-5 py-2.5 bg-white hover:bg-slate-50 text-slate-700 text-xs md:text-sm font-semibold rounded-xl border border-slate-300 shadow-2xs transition-all active:scale-95"
+              >
+                Reset
+              </button>
+
               <button
                 type="submit"
                 disabled={loading}
-                className="flex-1 bg-[#203598] hover:bg-[#1a2c7d] text-white font-semibold py-3.5 px-6 rounded-xl shadow-md shadow-[#203598]/20 transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-2 text-sm"
+                className="px-6 py-2.5 bg-[#1d4ed8] hover:bg-[#1e40af] text-white text-xs md:text-sm font-bold rounded-xl shadow-xs transition-all active:scale-95 flex items-center gap-2 disabled:opacity-60"
               >
                 {loading ? (
                   <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Menyimpan...
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan...</span>
                   </>
                 ) : (
                   <>
-                    <UserPlus className="w-5 h-5" />
-                    Simpan Data Peserta
+                    <Check className="w-4 h-4" />
+                    <span>Daftarkan Peserta</span>
                   </>
                 )}
               </button>
             </div>
           </form>
         </div>
-
-        {/* Recent Added Side Panel */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col">
-          <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-4 flex items-center gap-2">
-            <Building2 className="w-4 h-4 text-[#203598]" />
-            Baru Ditambahkan
-          </h3>
-
-          {recentAdded.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200 min-h-[200px]">
-              <UserPlus className="w-8 h-8 mb-2 opacity-50" />
-              <p className="text-xs font-medium">Belum ada peserta yang dimasukkan dalam sesi ini.</p>
-            </div>
-          ) : (
-            <div className="space-y-3 overflow-y-auto max-h-[320px] pr-1">
-              {recentAdded.map((item, idx) => (
-                <div
-                  key={item.id || idx}
-                  className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl text-sm flex items-start gap-3 hover:bg-blue-50/50 transition-colors"
-                >
-                  <div className="w-8 h-8 rounded-full bg-blue-100 text-[#203598] font-bold text-xs flex items-center justify-center shrink-0">
-                    {idx + 1}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-semibold text-slate-800 truncate">{item.nama}</p>
-                    <p className="text-xs text-slate-500 truncate">Kelompok: {item.kelompok}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -9,6 +9,9 @@ interface Peserta {
   id: number;
   nama: string;
   kelompok: string;
+  dapukan?: string;
+  tenda?: string;
+  grup_fgd?: string;
 }
 
 const NFC_TABLE_SQL = `-- Skrip SQL untuk membuat tabel 'nfc_peserta' di Supabase
@@ -20,8 +23,16 @@ CREATE TABLE IF NOT EXISTS public.nfc_peserta (
   nfc_uid TEXT UNIQUE NOT NULL,
   peserta_id BIGINT REFERENCES public.peserta(id) ON DELETE CASCADE,
   nama TEXT NOT NULL,
-  kelompok TEXT DEFAULT '-'
+  kelompok TEXT DEFAULT '-',
+  dapukan TEXT DEFAULT '-',
+  tenda TEXT DEFAULT '-',
+  grup_fgd TEXT DEFAULT '-'
 );
+
+-- Tambahkan kolom jika tabel nfc_peserta sudah pernah dibuat sebelumnya:
+ALTER TABLE public.nfc_peserta ADD COLUMN IF NOT EXISTS dapukan TEXT DEFAULT '-';
+ALTER TABLE public.nfc_peserta ADD COLUMN IF NOT EXISTS tenda TEXT DEFAULT '-';
+ALTER TABLE public.nfc_peserta ADD COLUMN IF NOT EXISTS grup_fgd TEXT DEFAULT '-';
 
 -- Aktifkan RLS dan Kebijakan Akses Penuh
 ALTER TABLE public.nfc_peserta ENABLE ROW LEVEL SECURITY;
@@ -60,7 +71,7 @@ export default function InputNFCPesertaForm() {
     try {
       const { data, error } = await supabase
         .from("peserta")
-        .select("id, nama, kelompok")
+        .select("id, nama, kelompok, dapukan, tenda, grup_fgd")
         .order("nama", { ascending: true });
 
       if (error) {
@@ -147,34 +158,28 @@ export default function InputNFCPesertaForm() {
     setMessage(null);
 
     const uidClean = hexToDecimal(scannedUID.trim(), true);
+    const payload = {
+      nfc_uid: uidClean,
+      peserta_id: selectedPeserta.id,
+      nama: selectedPeserta.nama,
+      kelompok: selectedPeserta.kelompok || "-",
+      dapukan: selectedPeserta.dapukan || "-",
+      tenda: selectedPeserta.tenda || "-",
+      grup_fgd: selectedPeserta.grup_fgd || "-",
+    };
 
     try {
       // Upsert or Insert to nfc_peserta table
       const { data, error } = await supabase
         .from("nfc_peserta")
-        .upsert(
-          [
-            {
-              nfc_uid: uidClean,
-              peserta_id: selectedPeserta.id,
-              nama: selectedPeserta.nama,
-              kelompok: selectedPeserta.kelompok,
-            },
-          ],
-          { onConflict: "nfc_uid" }
-        )
+        .upsert([payload], { onConflict: "nfc_uid" })
         .select();
 
       if (error) {
         // Check for fallback insert if upsert fails
-        const { error: insertErr } = await supabase.from("nfc_peserta").insert([
-          {
-            nfc_uid: uidClean,
-            peserta_id: selectedPeserta.id,
-            nama: selectedPeserta.nama,
-            kelompok: selectedPeserta.kelompok,
-          },
-        ]);
+        const { error: insertErr } = await supabase
+          .from("nfc_peserta")
+          .insert([payload]);
 
         if (insertErr) {
           throw insertErr;
@@ -212,11 +217,16 @@ export default function InputNFCPesertaForm() {
     setTimeout(() => setCopiedSql(false), 2500);
   };
 
-  const filteredPeserta = pesertaList.filter(
-    (p) =>
-      p.nama.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (p.kelompok && p.kelompok.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const filteredPeserta = pesertaList.filter((p) => {
+    const term = searchTerm.toLowerCase();
+    return (
+      p.nama.toLowerCase().includes(term) ||
+      (p.kelompok && p.kelompok.toLowerCase().includes(term)) ||
+      (p.dapukan && p.dapukan.toLowerCase().includes(term)) ||
+      (p.tenda && p.tenda.toLowerCase().includes(term)) ||
+      (p.grup_fgd && p.grup_fgd.toLowerCase().includes(term))
+    );
+  });
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -422,8 +432,11 @@ export default function InputNFCPesertaForm() {
                       >
                         <div>
                           <div className="font-bold text-sm">{p.nama}</div>
-                          <div className={`text-[11px] ${isSelected ? "text-blue-100" : "text-slate-400"}`}>
-                            Kelompok: {p.kelompok || "-"}
+                          <div className={`text-[11px] flex flex-wrap items-center gap-2 mt-0.5 ${isSelected ? "text-blue-100" : "text-slate-500"}`}>
+                            <span>Kelompok: {p.kelompok || "-"}</span>
+                            {p.dapukan && p.dapukan !== "-" && <span>• Dapukan: {p.dapukan}</span>}
+                            {p.tenda && p.tenda !== "-" && <span>• Tenda: {p.tenda}</span>}
+                            {p.grup_fgd && p.grup_fgd !== "-" && <span>• FGD: {p.grup_fgd}</span>}
                           </div>
                         </div>
                         {isSelected && <Check className="w-4 h-4 text-white shrink-0" />}
@@ -443,7 +456,24 @@ export default function InputNFCPesertaForm() {
                 <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between">
                   <div>
                     <div className="font-bold text-sm text-emerald-900">{selectedPeserta.nama}</div>
-                    <div className="text-xs text-emerald-700">Kelompok: {selectedPeserta.kelompok || "-"}</div>
+                    <div className="text-xs text-emerald-700 flex flex-wrap gap-2 mt-1">
+                      <span className="font-medium">Kelompok: {selectedPeserta.kelompok || "-"}</span>
+                      {selectedPeserta.dapukan && selectedPeserta.dapukan !== "-" && (
+                        <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
+                          Dapukan: {selectedPeserta.dapukan}
+                        </span>
+                      )}
+                      {selectedPeserta.tenda && selectedPeserta.tenda !== "-" && (
+                        <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
+                          Tenda: {selectedPeserta.tenda}
+                        </span>
+                      )}
+                      {selectedPeserta.grup_fgd && selectedPeserta.grup_fgd !== "-" && (
+                        <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
+                          FGD: {selectedPeserta.grup_fgd}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <UserCheck className="w-5 h-5 text-emerald-600 shrink-0" />
                 </div>

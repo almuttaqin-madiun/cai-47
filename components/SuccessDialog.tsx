@@ -12,6 +12,8 @@ interface SuccessDialogProps {
   nama?: string;
   serialNumber?: string;
   sesiNama?: string;
+  statusKehadiran?: string;
+  menitTerlambat?: number;
   photoUrl?: string;
   onClose: () => void;
   autoCloseMs?: number; // Auto-dismiss duration in ms (default 4000)
@@ -25,6 +27,8 @@ export default function SuccessDialog({
   nama,
   serialNumber,
   sesiNama,
+  statusKehadiran,
+  menitTerlambat,
   photoUrl,
   onClose,
   autoCloseMs = 4000,
@@ -136,6 +140,22 @@ export default function SuccessDialog({
               <div className="flex justify-between items-center">
                 <span className="text-slate-400 font-semibold">Sesi:</span>
                 <span className="font-bold text-[#203598]">{sesiNama}</span>
+              </div>
+            )}
+            {statusKehadiran && (
+              <div className="flex justify-between items-center pt-1 border-t border-slate-200/60">
+                <span className="text-slate-400 font-semibold">Status:</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                    statusKehadiran === "Terlambat"
+                      ? "bg-amber-100 text-amber-900 border border-amber-300"
+                      : "bg-emerald-100 text-emerald-900 border border-emerald-300"
+                  }`}
+                >
+                  {statusKehadiran === "Terlambat"
+                    ? `⚠️ Terlambat ${menitTerlambat && menitTerlambat > 0 ? `(+${menitTerlambat} menit)` : ""}`
+                    : "✅ Tepat Waktu"}
+                </span>
               </div>
             )}
           </div>
