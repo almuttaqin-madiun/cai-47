@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import Image from "next/image";
-import { User } from "lucide-react";
+import { X, Check, AlertTriangle, Clock } from "lucide-react";
 
 interface SuccessDialogProps {
   isOpen: boolean;
@@ -31,7 +31,7 @@ export default function SuccessDialog({
   menitTerlambat,
   photoUrl,
   onClose,
-  autoCloseMs = 4000,
+  autoCloseMs = 4500,
 }: SuccessDialogProps) {
   useEffect(() => {
     if (!isOpen) return;
@@ -61,118 +61,120 @@ export default function SuccessDialog({
 
   return (
     <div
-      className="fixed inset-0 bg-[#1e1b2e]/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in zoom-in-95 duration-200"
+      id="attendance-notification-backdrop"
+      className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
       onClick={onClose}
     >
       <div
-        className="bg-white text-slate-800 rounded-[32px] p-6 sm:p-8 max-w-xs sm:max-w-sm w-full text-center relative shadow-2xl border border-white/20 pt-16 animate-in slide-in-from-bottom-6 duration-300"
+        id="attendance-notification-card"
+        className={`w-full max-w-[340px] sm:max-w-[380px] rounded-[26px] p-6 sm:p-7 relative shadow-2xl transition-all animate-in zoom-in-95 duration-200 text-center ${
+          isSuccess
+            ? "bg-[#DCFCE7] text-[#14532D] shadow-emerald-950/15 border border-emerald-300/60"
+            : "bg-[#FFE4E6] text-[#881337] shadow-rose-950/15 border border-rose-300/60"
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Floating Top Emoji Avatar Badge */}
-        <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-24 h-24 rounded-full bg-[#fcd34d] border-4 border-[#1e1b2e] shadow-xl flex items-center justify-center text-5xl select-none">
+        {/* Close 'X' Button at Top-Right */}
+        <button
+          id="close-notification-btn"
+          type="button"
+          onClick={onClose}
+          className={`absolute top-4 right-4 p-1.5 rounded-full transition-colors cursor-pointer ${
+            isSuccess
+              ? "text-emerald-700/60 hover:text-emerald-900 hover:bg-emerald-200/60"
+              : "text-rose-700/60 hover:text-rose-900 hover:bg-rose-200/60"
+          }`}
+          aria-label="Tutup Notifikasi"
+        >
+          <X className="w-4 h-4 stroke-[2.5]" />
+        </button>
+
+        {/* Center Icon */}
+        <div className="flex justify-center mb-4 mt-1">
           {isSuccess ? (
-            <div className="relative">
-              {/* Hearts popping up (Matching reference image) */}
-              <div className="absolute -top-3 -right-2 text-rose-500 text-xs animate-bounce delay-100">
-                ❤️
-              </div>
-              <div className="absolute -top-5 right-1 text-rose-500 text-sm animate-pulse">
-                💕
-              </div>
-              😍
+            <div className="w-14 h-14 rounded-full bg-[#16A34A] text-white flex items-center justify-center shadow-md shadow-emerald-700/20 ring-4 ring-emerald-300/50">
+              <Check className="w-8 h-8 stroke-[3.5]" />
             </div>
           ) : (
-            <div className="relative">
-              😮
+            <div className="w-14 h-14 flex items-center justify-center text-[#DC2626]">
+              <AlertTriangle className="w-12 h-12 fill-[#DC2626] text-white drop-shadow-sm" />
             </div>
           )}
         </div>
 
-        {/* Title */}
-        <h3
-          className={`text-2xl font-black tracking-tight mb-2 ${
-            isSuccess ? "text-[#10b981]" : "text-[#f43f5e]"
-          }`}
-        >
-          {title || (isSuccess ? "Selamat!" : "Uh Oh")}
-        </h3>
+        {/* Message Content (Matching Reference Layout) */}
+        <div className="space-y-2">
+          {isSuccess ? (
+            <div>
+              <p className="text-sm sm:text-[15px] leading-relaxed text-[#166534]">
+                <strong className="font-black text-[#14532D] mr-1">Success!</strong>
+                {message || (
+                  <span>
+                    Presensi berhasil dicatat untuk{" "}
+                    <strong>{nama || "Peserta"}</strong>.
+                  </span>
+                )}
+              </p>
+            </div>
+          ) : (
+            <div>
+              <p className="text-sm sm:text-[15px] leading-relaxed text-[#9F1239]">
+                <strong className="font-black text-[#881337] mr-1">Error!</strong>
+                {message || "Kartu NFC tidak terdaftar. Silakan hubungi panitia."}
+              </p>
+            </div>
+          )}
 
-        {/* User Photo Avatar if available */}
-        {photoUrl && isSuccess && (
-          <div className="w-20 h-20 mx-auto mb-3 rounded-full overflow-hidden border-4 border-emerald-100 shadow-md relative">
-            <Image
-              src={photoUrl}
-              alt={nama || "Peserta"}
-              fill
-              className="object-cover"
-              unoptimized={true}
-              referrerPolicy="no-referrer"
-            />
-          </div>
-        )}
+          {/* Participant Mini Details for Success Feedback */}
+          {isSuccess && (nama || sesiNama || statusKehadiran) && (
+            <div className="mt-3 pt-3 border-t border-emerald-300/50 flex flex-col gap-2">
+              {photoUrl && (
+                <div className="flex justify-center">
+                  <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white shadow-sm relative">
+                    <Image
+                      src={photoUrl}
+                      alt={nama || "Peserta"}
+                      fill
+                      className="object-cover"
+                      unoptimized={true}
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                </div>
+              )}
 
-        {/* Message / Description */}
-        <p className="text-slate-600 font-medium text-sm sm:text-base leading-relaxed px-1">
-          {message ||
-            (isSuccess
-              ? `Presensi ${nama ? nama : "kartu"} berhasil dicatat!`
-              : "Terjadi kesalahan saat memproses absensi.")}
-        </p>
+              <div className="flex flex-wrap items-center justify-center gap-1.5 text-xs font-semibold">
+                {sesiNama && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-white/70 text-emerald-900 border border-emerald-200 shadow-2xs">
+                    Sesi: {sesiNama}
+                  </span>
+                )}
+                {statusKehadiran && (
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full font-bold border shadow-2xs ${
+                      statusKehadiran === "Terlambat"
+                        ? "bg-amber-100 text-amber-900 border-amber-300"
+                        : "bg-emerald-200/90 text-emerald-950 border-emerald-400/80"
+                    }`}
+                  >
+                    {statusKehadiran === "Terlambat"
+                      ? `Terlambat ${menitTerlambat && menitTerlambat > 0 ? `(+${menitTerlambat}m)` : ""}`
+                      : "Tepat Waktu"}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
-        {/* Metadata Details (Name, UID, Session) */}
-        {isSuccess && (
-          <div className="mt-4 p-3.5 bg-slate-50 rounded-2xl border border-slate-100 text-xs text-slate-600 space-y-1.5 text-left">
-            {nama && (
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold">Nama:</span>
-                <span className="font-bold text-slate-800 text-sm">{nama}</span>
-              </div>
-            )}
-            {serialNumber && (
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold">NFC UID:</span>
-                <span className="font-mono bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-700 font-bold">
-                  {serialNumber}
-                </span>
-              </div>
-            )}
-            {sesiNama && (
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold">Sesi:</span>
-                <span className="font-bold text-[#203598]">{sesiNama}</span>
-              </div>
-            )}
-            {statusKehadiran && (
-              <div className="flex justify-between items-center pt-1 border-t border-slate-200/60">
-                <span className="text-slate-400 font-semibold">Status:</span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                    statusKehadiran === "Terlambat"
-                      ? "bg-amber-100 text-amber-900 border border-amber-300"
-                      : "bg-emerald-100 text-emerald-900 border border-emerald-300"
-                  }`}
-                >
-                  {statusKehadiran === "Terlambat"
-                    ? `⚠️ Terlambat ${menitTerlambat && menitTerlambat > 0 ? `(+${menitTerlambat} menit)` : ""}`
-                    : "✅ Tepat Waktu"}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Action Button */}
-        <button
-          onClick={onClose}
-          className={`w-full mt-6 py-3.5 px-6 rounded-full font-black text-base shadow-lg transition-all active:scale-95 cursor-pointer ${
-            isSuccess
-              ? "bg-[#10b981] hover:bg-[#059669] text-white shadow-emerald-500/30"
-              : "bg-[#f43f5e] hover:bg-[#e11d48] text-white shadow-rose-500/30"
-          }`}
-        >
-          {isSuccess ? "Hooray!" : "Okeh..."}
-        </button>
+          {/* NFC UID detail for error diagnosis */}
+          {!isSuccess && serialNumber && (
+            <div className="mt-2.5 text-[11px] font-mono text-rose-800/80 bg-rose-200/50 py-1 px-2.5 rounded-lg inline-block border border-rose-300/40">
+              UID: {serialNumber}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
+

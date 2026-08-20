@@ -630,8 +630,8 @@ export default function NFCAttendanceApp() {
         setDialogState({
           isOpen: true,
           type: "error",
-          title: "Uh Oh",
-          message: `Identitas tidak dikenal! Kartu NFC dengan UID (${cleanUid}) belum terdaftar di database peserta.`,
+          title: "Error!",
+          message: `Kartu NFC dengan UID (${cleanUid}) belum terdaftar di database peserta. Silakan hubungi panitia.`,
           serialNumber: cleanUid,
         });
 
@@ -803,8 +803,8 @@ export default function NFCAttendanceApp() {
       setDialogState({
         isOpen: true,
         type: "success",
-        title: "Congratulations",
-        message: `Presensi Ananda/Bapak/Ibu ${namaPengguna} telah berhasil dicatat pada Sesi ${activeSession?.nama_sesi || "Umum"}.`,
+        title: "Success!",
+        message: `Presensi atas nama ${namaPengguna} berhasil dicatat pada Sesi ${activeSession?.nama_sesi || "Umum"}.`,
         nama: namaPengguna,
         serialNumber: cleanUid,
         sesiNama: activeSession?.nama_sesi || "Umum",
@@ -1029,19 +1029,45 @@ export default function NFCAttendanceApp() {
         {/* Mobile Backdrop */}
         {isMobileOpen && (
           <div
+            id="sidebar-mobile-backdrop"
             onClick={() => setIsMobileOpen(false)}
-            className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-40 lg:hidden"
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-40 lg:hidden animate-in fade-in duration-200 cursor-pointer"
           />
         )}
 
         {/* Sidebar Navigation */}
         <aside
+          id="app-sidebar"
           className={`
-            fixed lg:static inset-y-0 left-0 z-40 bg-white flex flex-col justify-between transition-all duration-300 ease-in-out shadow-lg lg:shadow-none overflow-hidden
-            ${isSidebarOpen ? "w-64 border-r border-slate-200 opacity-100 visible" : "w-0 border-r-0 p-0 opacity-0 invisible pointer-events-none -translate-x-full lg:translate-x-0"}
-            ${isMobileOpen ? "translate-x-0 !w-64 !opacity-100 !visible !pointer-events-auto !border-r !border-slate-200" : ""}
+            fixed lg:static inset-y-0 left-0 z-50 bg-white flex flex-col justify-between transition-all duration-300 ease-in-out shadow-2xl lg:shadow-none overflow-hidden
+            w-72 sm:w-80 lg:w-auto
+            ${isMobileOpen ? "translate-x-0 pointer-events-auto visible opacity-100" : "-translate-x-full pointer-events-none invisible opacity-0 lg:translate-x-0 lg:pointer-events-auto lg:visible lg:opacity-100"}
+            ${isSidebarOpen ? "lg:w-64 lg:border-r lg:border-slate-200 lg:opacity-100 lg:visible lg:pointer-events-auto" : "lg:w-0 lg:border-r-0 lg:p-0 lg:opacity-0 lg:invisible lg:pointer-events-none"}
           `}
         >
+          {/* Mobile Sidebar Header with Close/Hide Button */}
+          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between lg:hidden shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-[#203598] text-white flex items-center justify-center font-black text-xs shadow-xs">
+                CAI
+              </div>
+              <div className="text-left">
+                <div className="text-xs font-black text-slate-800 leading-tight">Menu Navigasi</div>
+                <div className="text-[10px] text-slate-500 font-medium leading-tight">CAI 2026 Kota Madiun</div>
+              </div>
+            </div>
+            <button
+              id="btn-hide-sidebar-top"
+              type="button"
+              onClick={() => setIsMobileOpen(false)}
+              className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 border border-rose-200 transition-all flex items-center gap-1.5 text-xs font-bold shadow-xs active:scale-95 cursor-pointer"
+              title="Sembunyikan Sidebar"
+            >
+              <X className="w-4 h-4 stroke-[2.5]" />
+              <span>Tutup</span>
+            </button>
+          </div>
+
           {/* Sidebar Navigation Items */}
           <div className="p-3 space-y-3 overflow-y-auto overflow-x-hidden flex-1 min-w-[256px]">
             <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
@@ -1389,10 +1415,23 @@ export default function NFCAttendanceApp() {
           </div>
 
           {/* Sidebar Footer */}
-          <div className="p-3 border-t border-slate-100 bg-slate-50/50 text-center">
-            <p className="text-[10px] text-slate-400 font-medium">
-              {isSidebarOpen ? "CAI 2026 Kota Madiun" : "CAI '26"}
-            </p>
+          <div className="p-3 border-t border-slate-200 bg-slate-50/80 flex flex-col gap-2 shrink-0">
+            {/* Mobile explicit hide button */}
+            <button
+              id="btn-hide-sidebar-bottom"
+              type="button"
+              onClick={() => setIsMobileOpen(false)}
+              className="w-full py-2.5 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 border border-rose-200 text-xs font-bold transition-all flex items-center justify-center gap-2 lg:hidden cursor-pointer shadow-xs active:scale-98"
+            >
+              <X className="w-4 h-4 stroke-[2.5]" />
+              <span>Sembunyikan / Tutup Menu</span>
+            </button>
+
+            <div className="text-center">
+              <p className="text-[10px] text-slate-400 font-medium">
+                {isSidebarOpen ? "CAI 2026 Kota Madiun" : "CAI '26"}
+              </p>
+            </div>
           </div>
         </aside>
 
