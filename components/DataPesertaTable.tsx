@@ -34,9 +34,14 @@ import {
   Phone,
   Calendar,
   CheckCircle2,
+  Camera,
+  UploadCloud,
+  Image as ImageIcon,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
+import { toTitleCase } from "@/lib/utils";
+import { uploadFotoPeserta } from "@/lib/storage";
 
 export interface Peserta {
   id: number;
@@ -52,7 +57,8 @@ export interface Peserta {
   uid_nfc?: string;
   serial_number?: string;
   no_hp?: string;
-  foto_url?: string;
+  foto?: string | null;
+  foto_url?: string | null;
 }
 
 interface DataPesertaTableProps {
@@ -95,6 +101,9 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
   const [editGrupFgd, setEditGrupFgd] = useState("");
   const [editJenisKelamin, setEditJenisKelamin] = useState("");
   const [editSmartcard, setEditSmartcard] = useState("");
+  const [editFotoFile, setEditFotoFile] = useState<File | null>(null);
+  const [editFotoPreview, setEditFotoPreview] = useState<string | null>(null);
+  const [editExistingFotoUrl, setEditExistingFotoUrl] = useState<string>("");
   const [editLoading, setEditLoading] = useState(false);
 
   // Swap State Form
@@ -152,8 +161,13 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
 
         return {
           ...p,
-          grup: grupVal,
-          tenda: grupVal,
+          nama: toTitleCase(p.nama),
+          desa: p.desa ? toTitleCase(p.desa) : "",
+          kelompok: p.kelompok ? toTitleCase(p.kelompok) : "",
+          dapukan: p.dapukan ? toTitleCase(p.dapukan) : "Peserta",
+          grup: grupVal !== "-" ? toTitleCase(grupVal) : "-",
+          tenda: grupVal !== "-" ? toTitleCase(grupVal) : "-",
+          grup_fgd: p.grup_fgd && p.grup_fgd !== "-" ? toTitleCase(p.grup_fgd) : "-",
           smartcard: smartcardLinked,
           nfc_uid: smartcardLinked,
           uid_nfc: smartcardLinked,
@@ -479,6 +493,9 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
     setEditGrupFgd(p.grup_fgd || "");
     setEditJenisKelamin(p.jenis_kelamin || (getGender(p) === "L" ? "L" : "P"));
     setEditSmartcard(getSmartcardCode(p));
+    setEditExistingFotoUrl(p.foto || p.foto_url || "");
+    setEditFotoFile(null);
+    setEditFotoPreview(null);
   };
 
   // Save Edit & sync to both peserta and nfc_peserta in Supabase
@@ -489,6 +506,17 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
     setEditLoading(true);
     try {
       const cleanGrup = editGrup.trim();
+
+      // Handle photo upload if a new file was selected
+      let finalFotoUrl = editExistingFotoUrl;
+      if (editFotoFile) {
+        try {
+          finalFotoUrl = await uploadFotoPeserta(editFotoFile, editNama || editingPeserta.id);
+        } catch (uploadErr) {
+          console.warn("Upload foto gagal saat edit:", uploadErr);
+        }
+      }
+
       const payload: any = {
         nama: editNama.trim(),
         kelompok: editKelompok.trim(),
@@ -497,6 +525,10 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
         tenda: cleanGrup,
         grup_fgd: editGrupFgd.trim(),
       };
+
+      if (finalFotoUrl) {
+        payload.foto = finalFotoUrl;
+      }
 
       if (editJenisKelamin) {
         payload.jenis_kelamin = editJenisKelamin.trim();
@@ -508,30 +540,39 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
         payload.nfc_uid = cleanCard;
       }
 
-      // Try updating with grup column first
+      // Try updating with full payload first (including 'foto')
       let { error } = await supabase
         .from("peserta")
         .update(payload)
         .eq("id", editingPeserta.id);
 
       if (error) {
-        // If error might be missing 'grup' or 'tenda' column, try without 'grup' or without 'tenda'
+        console.warn("Update attempt error:", error.message);
+        // Fallback without tenda (using grup)
         const payloadOnlyGrup = { ...payload };
         delete payloadOnlyGrup.tenda;
         const resGrup = await supabase.from("peserta").update(payloadOnlyGrup).eq("id", editingPeserta.id);
         
-        if (resGrup.error) {
+        if (!resGrup.error) {
+          error = null;
+        } else {
+          // Fallback without grup (using tenda)
           const payloadOnlyTenda = { ...payload };
           delete payloadOnlyTenda.grup;
           const resTenda = await supabase.from("peserta").update(payloadOnlyTenda).eq("id", editingPeserta.id);
-          if (resTenda.error) {
+          if (!resTenda.error) {
+            error = null;
+          } else {
             // Fallback basic payload
-            const basicPayload = {
+            const basicPayload: any = {
               nama: editNama.trim(),
               kelompok: editKelompok.trim(),
               dapukan: editDapukan.trim(),
               grup_fgd: editGrupFgd.trim(),
             };
+            if (finalFotoUrl) {
+              basicPayload.foto = finalFotoUrl;
+            }
             const { error: basicErr } = await supabase
               .from("peserta")
               .update(basicPayload)
@@ -569,6 +610,8 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
             ? {
                 ...item,
                 ...payload,
+                foto: finalFotoUrl || item.foto,
+                foto_url: finalFotoUrl || item.foto_url,
                 grup: cleanGrup,
                 tenda: cleanGrup,
               }
@@ -1094,9 +1137,9 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
                                 : "bg-emerald-100 text-emerald-800 border border-emerald-200/90"
                             }`}
                           >
-                            {p.foto_url ? (
+                            {(p.foto || p.foto_url) ? (
                               <img
-                                src={p.foto_url}
+                                src={p.foto || p.foto_url || ""}
                                 alt={p.nama}
                                 className="w-full h-full object-cover"
                               />
@@ -1250,13 +1293,21 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
             <div className="space-y-4 text-xs">
               <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-xl border border-slate-200/80">
                 <div
-                  className={`w-14 h-14 rounded-xl flex items-center justify-center text-xl font-bold ${
+                  className={`w-14 h-14 rounded-xl overflow-hidden flex items-center justify-center text-xl font-bold shrink-0 ${
                     getGender(viewPeserta) === "L"
                       ? "bg-amber-100 text-amber-800 border border-amber-200"
                       : "bg-emerald-100 text-emerald-800 border border-emerald-200"
                   }`}
                 >
-                  {viewPeserta.nama.charAt(0).toUpperCase()}
+                  {(viewPeserta.foto || viewPeserta.foto_url) ? (
+                    <img
+                      src={viewPeserta.foto || viewPeserta.foto_url || ""}
+                      alt={viewPeserta.nama}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span>{viewPeserta.nama.charAt(0).toUpperCase()}</span>
+                  )}
                 </div>
                 <div>
                   <h4 className="text-sm font-bold text-slate-900">{viewPeserta.nama}</h4>
@@ -1444,6 +1495,87 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
                 </div>
               </div>
 
+              {/* Foto Peserta (Opsional -> Supabase Storage CAI 2026) */}
+              <div className="space-y-1.5 pt-1">
+                <div className="flex items-center justify-between">
+                  <label className="block font-semibold text-slate-700">
+                    Foto Profil Peserta <span className="text-slate-400 font-normal">(Opsional - Bucket CAI 2026)</span>
+                  </label>
+                </div>
+
+                <div className="p-3 bg-slate-50 border border-dashed border-slate-300 rounded-xl flex items-center gap-3">
+                  {/* Photo Preview / Existing Foto */}
+                  <div className="w-14 h-14 rounded-lg overflow-hidden bg-white border border-slate-200 shrink-0 flex items-center justify-center relative">
+                    {editFotoPreview ? (
+                      <img
+                        src={editFotoPreview}
+                        alt="Preview Foto"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : editExistingFotoUrl ? (
+                      <img
+                        src={editExistingFotoUrl}
+                        alt="Foto Saat Ini"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="text-slate-300 flex flex-col items-center">
+                        <ImageIcon className="w-6 h-6" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1 space-y-1">
+                    <input
+                      type="file"
+                      id="edit-peserta-foto-input"
+                      accept="image/png, image/jpeg, image/jpg, image/webp"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          const file = e.target.files[0];
+                          if (file.size > 5 * 1024 * 1024) {
+                            alert("Ukuran foto maksimal 5MB.");
+                            return;
+                          }
+                          setEditFotoFile(file);
+                          setEditFotoPreview(URL.createObjectURL(file));
+                        }
+                      }}
+                      className="hidden"
+                    />
+                    <div className="flex items-center gap-2">
+                      <label
+                        htmlFor="edit-peserta-foto-input"
+                        className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-300 shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5 text-[#1d4ed8]" />
+                        <span>{editFotoFile || editExistingFotoUrl ? "Ubah Foto" : "Pilih Foto"}</span>
+                      </label>
+                      {(editFotoFile || editExistingFotoUrl) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditFotoFile(null);
+                            setEditFotoPreview(null);
+                            setEditExistingFotoUrl("");
+                          }}
+                          className="px-2 py-1.5 text-rose-600 hover:bg-rose-50 text-xs font-semibold rounded-lg transition-colors"
+                        >
+                          Hapus Foto
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      {editFotoFile
+                        ? `File baru: ${editFotoFile.name}`
+                        : editExistingFotoUrl
+                        ? "Foto saat ini tersimpan. Klik Ubah Foto untuk mengganti."
+                        : "Unggah foto profil peserta (tidak wajib)."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               <div className="flex justify-end gap-2.5 pt-3 border-t">
                 <button
                   type="button"
@@ -1599,13 +1731,21 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
               <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <div
-                    className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
+                    className={`w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center font-bold text-xs shrink-0 ${
                       getGender(historyPeserta) === "L"
                         ? "bg-amber-100 text-amber-800 border border-amber-200"
                         : "bg-emerald-100 text-emerald-800 border border-emerald-200"
                     }`}
                   >
-                    {historyPeserta.nama ? historyPeserta.nama.charAt(0).toUpperCase() : "P"}
+                    {(historyPeserta.foto || historyPeserta.foto_url) ? (
+                      <img
+                        src={historyPeserta.foto || historyPeserta.foto_url || ""}
+                        alt={historyPeserta.nama}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span>{historyPeserta.nama ? historyPeserta.nama.charAt(0).toUpperCase() : "P"}</span>
+                    )}
                   </div>
                   <div>
                     <h4 className="font-bold text-slate-900 text-sm leading-tight">{historyPeserta.nama}</h4>

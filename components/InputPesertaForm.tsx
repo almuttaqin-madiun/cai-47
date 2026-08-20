@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   CheckCircle2,
   AlertCircle,
@@ -14,8 +14,14 @@ import {
   Tent,
   MessageSquare,
   ShieldAlert,
+  Camera,
+  UploadCloud,
+  X,
+  Image as ImageIcon,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { toTitleCase } from "@/lib/utils";
+import { uploadFotoPeserta } from "@/lib/storage";
 
 interface InputPesertaFormProps {
   onSuccess?: () => void;
@@ -31,6 +37,11 @@ export default function InputPesertaForm({ onSuccess, onGoToData }: InputPeserta
   const [grup, setGrup] = useState("");
   const [grupFgd, setGrupFgd] = useState("");
 
+  // Foto Peserta (Opsional)
+  const [fotoFile, setFotoFile] = useState<File | null>(null);
+  const [fotoPreview, setFotoPreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Existing suggestions
   const [kelompokOptions, setKelompokOptions] = useState<string[]>([]);
   const [grupOptions, setGrupOptions] = useState<string[]>([]);
@@ -38,9 +49,35 @@ export default function InputPesertaForm({ onSuccess, onGoToData }: InputPeserta
 
   // State status
   const [loading, setLoading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [submittedData, setSubmittedData] = useState<any>(null);
+
+  // Handle Photo selection
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      if (file.size > 5 * 1024 * 1024) {
+        setErrorMessage("Ukuran foto terlalu besar. Maksimal 5MB.");
+        return;
+      }
+      setFotoFile(file);
+      setFotoPreview(URL.createObjectURL(file));
+      setErrorMessage(null);
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    setFotoFile(null);
+    if (fotoPreview) {
+      URL.revokeObjectURL(fotoPreview);
+      setFotoPreview(null);
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
 
   // Fetch existing options for convenience suggestions
   useEffect(() => {
@@ -96,54 +133,96 @@ export default function InputPesertaForm({ onSuccess, onGoToData }: InputPeserta
     }
 
     setLoading(true);
+    setUploadStatus(null);
 
-    const cleanGrup = grup.trim() || "-";
+    const cleanGrup = grup.trim() ? toTitleCase(grup.trim()) : "-";
+    const cleanFgd = grupFgd.trim() ? toTitleCase(grupFgd.trim()) : "-";
+
+    let uploadedFotoUrl = "";
+
+    // Upload photo to Supabase storage bucket 'CAI 2026' if provided
+    if (fotoFile) {
+      try {
+        setUploadStatus("Mengunggah foto profil ke storage...");
+        uploadedFotoUrl = await uploadFotoPeserta(fotoFile, nama);
+      } catch (uploadErr: any) {
+        console.warn("Upload foto gagal (non-fatal):", uploadErr);
+        // Continue saving peserta even if photo upload failed
+      }
+    }
+
     const payload: any = {
-      nama: nama.trim(),
-      kelompok: kelompok.trim(),
-      dapukan: dapukan.trim(),
+      nama: toTitleCase(nama),
+      kelompok: toTitleCase(kelompok),
+      dapukan: toTitleCase(dapukan),
       grup: cleanGrup,
       tenda: cleanGrup,
-      grup_fgd: grupFgd.trim() || "-",
+      grup_fgd: cleanFgd,
       jenis_kelamin: jenisKelamin,
     };
 
+    if (uploadedFotoUrl) {
+      payload.foto = uploadedFotoUrl;
+    }
+
     try {
+      setUploadStatus("Menyimpan data peserta...");
       let insertedRow: any = null;
 
-      // Attempt 1: Try with full payload (grup, tenda, jenis_kelamin)
-      const { data, error } = await supabase
+      // Attempt 1: Try with full payload containing 'foto'
+      let { data, error } = await supabase
         .from("peserta")
         .insert([payload])
         .select();
 
       if (error) {
-        // Fallback 1: Try without 'grup' (if table only has 'tenda')
-        const payloadOnlyTenda = { ...payload };
+        console.warn("Insert attempt 1 error:", error.message);
+        
+        // Fallback 1: If 'foto' or 'grup' caused error, try with tenda / alternate fields
+        const payloadWithFoto = { ...payload };
+        // Ensure foto is retained
+        payloadWithFoto.foto = uploadedFotoUrl || null;
+        delete payloadWithFoto.foto_url;
+
+        // Try without 'grup' (using 'tenda')
+        const payloadOnlyTenda = { ...payloadWithFoto };
         delete payloadOnlyTenda.grup;
         const resTenda = await supabase.from("peserta").insert([payloadOnlyTenda]).select();
 
-        if (resTenda.error) {
-          // Fallback 2: Try without 'tenda' (if table only has 'grup')
-          const payloadOnlyGrup = { ...payload };
+        if (!resTenda.error && resTenda.data?.length) {
+          insertedRow = resTenda.data[0];
+          error = null;
+        } else {
+          // Try without 'tenda' (using 'grup')
+          const payloadOnlyGrup = { ...payloadWithFoto };
           delete payloadOnlyGrup.tenda;
           const resGrup = await supabase.from("peserta").insert([payloadOnlyGrup]).select();
 
-          if (resGrup.error) {
-            // Fallback 3: Basic insert without select
-            const basicPayload = {
-              nama: nama.trim(),
-              kelompok: kelompok.trim(),
-              dapukan: dapukan.trim(),
-              grup_fgd: grupFgd.trim() || "-",
-            };
-            const { error: basicErr } = await supabase.from("peserta").insert([basicPayload]);
-            if (basicErr) throw basicErr;
-          } else if (resGrup.data && resGrup.data.length > 0) {
+          if (!resGrup.error && resGrup.data?.length) {
             insertedRow = resGrup.data[0];
+            error = null;
+          } else {
+            // Fallback: Basic insert with foto
+            const basicPayload: any = {
+              nama: toTitleCase(nama),
+              kelompok: toTitleCase(kelompok),
+              dapukan: toTitleCase(dapukan),
+              grup: cleanGrup,
+              grup_fgd: cleanFgd,
+              jenis_kelamin: jenisKelamin,
+            };
+            if (uploadedFotoUrl) {
+              basicPayload.foto = uploadedFotoUrl;
+            }
+            const { data: bData, error: basicErr } = await supabase.from("peserta").insert([basicPayload]).select();
+            if (basicErr) {
+              // Last fallback without select
+              const { error: noSelectErr } = await supabase.from("peserta").insert([basicPayload]);
+              if (noSelectErr) throw noSelectErr;
+            } else if (bData && bData.length > 0) {
+              insertedRow = bData[0];
+            }
           }
-        } else if (resTenda.data && resTenda.data.length > 0) {
-          insertedRow = resTenda.data[0];
         }
       } else if (data && data.length > 0) {
         insertedRow = data[0];
@@ -152,6 +231,8 @@ export default function InputPesertaForm({ onSuccess, onGoToData }: InputPeserta
       setSubmittedData({
         id: insertedRow?.id || Date.now(),
         ...payload,
+        foto: uploadedFotoUrl,
+        foto_url: uploadedFotoUrl,
         grup: cleanGrup,
         jenisKelamin,
       });
@@ -170,6 +251,7 @@ export default function InputPesertaForm({ onSuccess, onGoToData }: InputPeserta
       setErrorMessage(errDetail);
     } finally {
       setLoading(false);
+      setUploadStatus(null);
     }
   };
 
@@ -180,6 +262,7 @@ export default function InputPesertaForm({ onSuccess, onGoToData }: InputPeserta
     setDapukan("");
     setGrup("");
     setGrupFgd("");
+    handleRemovePhoto();
     setIsSubmitted(false);
     setSubmittedData(null);
     setErrorMessage(null);
@@ -414,6 +497,78 @@ export default function InputPesertaForm({ onSuccess, onGoToData }: InputPeserta
                       <option key={f} value={f} />
                     ))}
                   </datalist>
+                </div>
+              </div>
+
+              {/* 7. FOTO PROFIL PESERTA (Opsional -> Bucket 'CAI 2026') */}
+              <div className="space-y-2 col-span-1 md:col-span-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-slate-800">
+                    Foto Profil Peserta <span className="text-slate-400 font-normal">(Opsional - Bucket CAI 2026)</span>
+                  </label>
+                  <span className="text-[11px] text-slate-400">Format: JPG, PNG, WEBP (Maks. 5MB)</span>
+                </div>
+
+                <div className="p-4 bg-slate-50/80 border border-dashed border-slate-300 rounded-2xl flex flex-col sm:flex-row items-center gap-4">
+                  {/* Photo Preview / Placeholder */}
+                  <div className="relative w-20 h-20 rounded-2xl overflow-hidden bg-white border border-slate-200 shadow-2xs shrink-0 flex items-center justify-center">
+                    {fotoPreview ? (
+                      <>
+                        <img
+                          src={fotoPreview}
+                          alt="Preview Foto"
+                          className="w-full h-full object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleRemovePhoto}
+                          className="absolute top-1 right-1 p-1 bg-rose-600/80 hover:bg-rose-700 text-white rounded-full transition-colors"
+                          title="Hapus foto"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </>
+                    ) : (
+                      <div className="text-slate-300 flex flex-col items-center">
+                        <ImageIcon className="w-8 h-8" />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Upload Controls */}
+                  <div className="flex-1 text-center sm:text-left space-y-2">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      id="peserta-foto-input"
+                      accept="image/png, image/jpeg, image/jpg, image/webp"
+                      onChange={handlePhotoChange}
+                      className="hidden"
+                    />
+                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                      <label
+                        htmlFor="peserta-foto-input"
+                        className="px-3.5 py-2 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-xl border border-slate-300 shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                      >
+                        <UploadCloud className="w-4 h-4 text-[#1d4ed8]" />
+                        <span>{fotoFile ? "Ganti Foto" : "Pilih File Foto"}</span>
+                      </label>
+                      {fotoFile && (
+                        <button
+                          type="button"
+                          onClick={handleRemovePhoto}
+                          className="px-3 py-2 text-rose-600 hover:bg-rose-50 text-xs font-semibold rounded-xl transition-colors"
+                        >
+                          Hapus
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      {fotoFile
+                        ? `File terpilih: ${fotoFile.name} (${(fotoFile.size / 1024).toFixed(1)} KB)`
+                        : "Foto tidak wajib diisi. Foto akan tersimpan di Supabase Bucket 'CAI 2026/Foto Profil'."}
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>

@@ -18,10 +18,13 @@ import {
   CheckCircle2,
   Volume2,
   PieChart,
-  Clock
+  Clock,
+  LogOut,
+  ShieldCheck,
+  UserCheck
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { hexToDecimal } from "@/lib/utils";
+import { hexToDecimal, toTitleCase } from "@/lib/utils";
 import InputPesertaForm from "./InputPesertaForm";
 import DataPesertaTable from "./DataPesertaTable";
 import InputNFCPesertaForm from "./InputNFCPesertaForm";
@@ -30,6 +33,8 @@ import RekapPresensi from "./RekapPresensi";
 import SuccessDialog from "./SuccessDialog";
 import PlottingPeserta from "./PlottingPeserta";
 import StatistikKehadiran from "./StatistikKehadiran";
+import PerizinanSesi from "./PerizinanSesi";
+import AuthRoleModal, { UserSession, RoleType } from "./AuthRoleModal";
 
 interface AttendanceRecord {
   id: string;
@@ -79,9 +84,85 @@ function getUidCandidates(input: string): string[] {
   return Array.from(candidates).filter(Boolean);
 }
 
+// Role-to-Tabs Permissions Matrix
+const ROLE_ALLOWED_TABS: Record<string, string[]> = {
+  kesekertariatan: [
+    "presensi",
+    "presensi_grafik",
+    "presensi_izin",
+    "peserta",
+    "input",
+    "nfc",
+    "plotting_tenda",
+    "plotting_fgd",
+    "jadwal_materi",
+    "jadwal_makan",
+    "jadwal_sholat",
+    "rekap_presensi",
+    "sesi",
+    "statistik",
+  ],
+  acara: [
+    "jadwal_materi",
+    "jadwal_makan",
+    "jadwal_sholat",
+    "presensi_grafik",
+    "presensi_izin",
+    "rekap_presensi",
+    "sesi",
+    "statistik",
+  ],
+  operator: [
+    "presensi",
+    "presensi_izin",
+    "nfc",
+    "peserta",
+  ],
+  "steering committee": [
+    "presensi_grafik",
+    "peserta",
+    "jadwal_materi",
+    "jadwal_makan",
+    "jadwal_sholat",
+    "rekap_presensi",
+    "sesi",
+    "statistik",
+  ],
+  "organizing committee": [
+    "presensi",
+    "presensi_grafik",
+    "presensi_izin",
+    "peserta",
+    "plotting_tenda",
+    "plotting_fgd",
+    "jadwal_materi",
+    "jadwal_makan",
+    "jadwal_sholat",
+    "rekap_presensi",
+    "sesi",
+    "statistik",
+  ],
+  fasilitator: [
+    "peserta",
+    "plotting_tenda",
+    "plotting_fgd",
+    "presensi_grafik",
+    "presensi_izin",
+    "jadwal_materi",
+    "jadwal_makan",
+    "jadwal_sholat",
+    "sesi",
+    "statistik",
+  ],
+};
+
 export default function NFCAttendanceApp() {
+  // User Authentication & Role State
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
   const [activeTab, setActiveTab] = useState<
-    "presensi" | "input" | "peserta" | "nfc" | "plotting_tenda" | "plotting_fgd" | "sesi" | "jadwal_materi" | "jadwal_makan" | "jadwal_sholat" | "rekap_presensi" | "statistik"
+    "presensi" | "presensi_grafik" | "presensi_izin" | "input" | "peserta" | "nfc" | "plotting_tenda" | "plotting_fgd" | "sesi" | "jadwal_materi" | "jadwal_makan" | "jadwal_sholat" | "rekap_presensi" | "statistik"
   >("presensi");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
@@ -116,27 +197,76 @@ export default function NFCAttendanceApp() {
 
   const usbInputRef = useRef<HTMLInputElement>(null);
 
+  // Check saved session on mount; if none, show role selection modal immediately
+  useEffect(() => {
+    const savedUserStr = localStorage.getItem("cai_current_user");
+    if (savedUserStr) {
+      try {
+        const parsed = JSON.parse(savedUserStr);
+        if (parsed && parsed.role && parsed.nama_lengkap) {
+          setCurrentUser(parsed);
+          // Ensure activeTab is allowed for this role
+          const roleKey = String(parsed.role).toLowerCase();
+          const allowed = ROLE_ALLOWED_TABS[roleKey] || [];
+          if (allowed.length > 0 && !allowed.includes(activeTab)) {
+            setActiveTab(allowed[0] as any);
+          }
+          return;
+        }
+      } catch (e) {}
+    }
+    // Not authenticated -> open modal
+    setIsAuthModalOpen(true);
+  }, []);
+
+  const handleLoginSuccess = (user: UserSession) => {
+    setCurrentUser(user);
+    setIsAuthModalOpen(false);
+
+    const roleKey = String(user.role).toLowerCase();
+    const allowed = ROLE_ALLOWED_TABS[roleKey] || [];
+    if (allowed.length > 0 && !allowed.includes(activeTab)) {
+      setActiveTab(allowed[0] as any);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("cai_current_user");
+    setCurrentUser(null);
+    setIsAuthModalOpen(true);
+  };
+
+  const isTabAllowed = (tabKey: string): boolean => {
+    if (!currentUser) return true; // default before auth
+    const roleKey = String(currentUser.role).toLowerCase();
+    const allowed = ROLE_ALLOWED_TABS[roleKey];
+    if (!allowed) return true;
+    return allowed.includes(tabKey);
+  };
+
   // Active session state auto check
   const [activeSession, setActiveSession] = useState<SesiAbsensi | null>(null);
 
   const focusUsbInput = useCallback(() => {
-    if (usbInputRef.current && activeTab === "presensi") {
-      usbInputRef.current.focus();
-      setIsUsbFocused(true);
+    if (
+      usbInputRef.current &&
+      activeTab === "presensi" &&
+      !isAuthModalOpen &&
+      !dialogState.isOpen
+    ) {
+      const activeTag = (document.activeElement?.tagName || "").toUpperCase();
+      if (activeTag !== "INPUT" && activeTag !== "TEXTAREA" && activeTag !== "SELECT") {
+        usbInputRef.current.focus();
+        setIsUsbFocused(true);
+      }
     }
-  }, [activeTab]);
+  }, [activeTab, isAuthModalOpen, dialogState.isOpen]);
 
   useEffect(() => {
-    if (activeTab === "presensi" && usbModeActive) {
+    if (activeTab === "presensi" && usbModeActive && !isAuthModalOpen && !dialogState.isOpen) {
       focusUsbInput();
-      const interval = setInterval(() => {
-        if (document.activeElement !== usbInputRef.current && activeTab === "presensi") {
-          usbInputRef.current?.focus();
-        }
-      }, 1500);
-      return () => clearInterval(interval);
     }
-  }, [activeTab, usbModeActive, focusUsbInput]);
+  }, [activeTab, usbModeActive, isAuthModalOpen, dialogState.isOpen, focusUsbInput]);
 
   const checkActiveSession = useCallback(async () => {
     try {
@@ -343,8 +473,9 @@ export default function NFCAttendanceApp() {
         navigator.vibrate(200);
       }
 
-      // 1. Lookup participant name from Supabase & Local Storage
+      // 1. Lookup participant name and photo from Supabase & Local Storage
       let namaPengguna = "";
+      let photoUrlFound = "";
       const uidCandidates = getUidCandidates(cleanUid);
 
       try {
@@ -358,16 +489,17 @@ export default function NFCAttendanceApp() {
           const nfcRec = nfcDataList[0];
           namaPengguna = nfcRec.nama || nfcRec.nama_peserta || "";
 
-          // If name on nfc_peserta is blank, retrieve from joined 'peserta' table using peserta_id
-          if (!namaPengguna && nfcRec.peserta_id) {
+          // If name on nfc_peserta is blank or to fetch photo, retrieve from joined 'peserta' table
+          if (nfcRec.peserta_id) {
             const { data: pDetail } = await supabase
               .from("peserta")
-              .select("nama, nama_peserta")
+              .select("nama, nama_peserta, foto, foto_url")
               .eq("id", nfcRec.peserta_id)
               .maybeSingle();
 
             if (pDetail) {
-              namaPengguna = pDetail.nama || pDetail.nama_peserta || "";
+              if (!namaPengguna) namaPengguna = pDetail.nama || pDetail.nama_peserta || "";
+              photoUrlFound = pDetail.foto || pDetail.foto_url || "";
             }
           }
         }
@@ -387,15 +519,16 @@ export default function NFCAttendanceApp() {
 
             if (found) {
               namaPengguna = found.nama || found.nama_peserta || "";
-              if (!namaPengguna && found.peserta_id) {
+              if (found.peserta_id) {
                 const { data: pDetail } = await supabase
                   .from("peserta")
-                  .select("nama, nama_peserta")
+                  .select("nama, nama_peserta, foto, foto_url")
                   .eq("id", found.peserta_id)
                   .maybeSingle();
 
                 if (pDetail) {
-                  namaPengguna = pDetail.nama || pDetail.nama_peserta || "";
+                  if (!namaPengguna) namaPengguna = pDetail.nama || pDetail.nama_peserta || "";
+                  photoUrlFound = pDetail.foto || pDetail.foto_url || "";
                 }
               }
             }
@@ -406,12 +539,13 @@ export default function NFCAttendanceApp() {
         if (!namaPengguna) {
           const { data: fallbackData } = await supabase
             .from("peserta")
-            .select("nama, nama_peserta")
+            .select("nama, nama_peserta, foto, foto_url")
             .or(uidCandidates.map((u) => `nfc_uid.eq.${u},serial_number.eq.${u}`).join(","))
             .maybeSingle();
 
           if (fallbackData) {
             namaPengguna = fallbackData.nama || fallbackData.nama_peserta || "";
+            photoUrlFound = fallbackData.foto || fallbackData.foto_url || "";
           }
         }
       } catch (err) {
@@ -508,6 +642,8 @@ export default function NFCAttendanceApp() {
       }
 
       // IF PARTICIPANT FOUND (Match Success)
+      namaPengguna = toTitleCase(namaPengguna);
+
       // Sound feedback success
       try {
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -526,12 +662,14 @@ export default function NFCAttendanceApp() {
         navigator.vibrate(200);
       }
 
-      // 2. Public Photo URL
-      const { data: publicUrlData } = supabase.storage
-        .from("CAI 2026")
-        .getPublicUrl(`Foto Profil/${cleanUid}.jpg`);
-
-      const photoUrl = publicUrlData?.publicUrl;
+      // 2. Photo URL from database or Storage
+      let photoUrl = photoUrlFound;
+      if (!photoUrl) {
+        const { data: publicUrlData } = supabase.storage
+          .from("CAI 2026")
+          .getPublicUrl(`Foto Profil/${cleanUid}.jpg`);
+        photoUrl = publicUrlData?.publicUrl || "";
+      }
 
       // 3. Determine Late Status based on Active Session & Waktu Telat
       let statusKehadiran = "Tepat Waktu";
@@ -682,6 +820,57 @@ export default function NFCAttendanceApp() {
     [activeSession]
   );
 
+  // Global background listener for USB NFC / Barcode reader (Keyboard Wedge)
+  useEffect(() => {
+    if (activeTab !== "presensi" || !usbModeActive || isAuthModalOpen || dialogState.isOpen) {
+      return;
+    }
+
+    let buffer = "";
+    let lastKeyTime = Date.now();
+
+    const handleWindowKeyDown = (e: KeyboardEvent) => {
+      // Do not capture if user is typing in an input, textarea, select, or modal
+      const activeTag = (document.activeElement?.tagName || "").toUpperCase();
+      const isEditable =
+        activeTag === "INPUT" ||
+        activeTag === "TEXTAREA" ||
+        activeTag === "SELECT" ||
+        (document.activeElement as HTMLElement)?.isContentEditable;
+
+      if (isEditable || isAuthModalOpen || dialogState.isOpen) {
+        return;
+      }
+
+      if (e.key === "Enter") {
+        const uid = buffer.trim();
+        if (uid.length >= 3) {
+          e.preventDefault();
+          buffer = "";
+          processAbsenRecord(uid);
+        }
+        buffer = "";
+        return;
+      }
+
+      // If single printable character (digits/letters from reader)
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const now = Date.now();
+        // Readers send strokes in rapid succession (< 100ms). Reset buffer if user paused > 2000ms
+        if (now - lastKeyTime > 2000) {
+          buffer = "";
+        }
+        lastKeyTime = now;
+        buffer += e.key;
+      }
+    };
+
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleWindowKeyDown);
+    };
+  }, [activeTab, usbModeActive, isAuthModalOpen, dialogState.isOpen, processAbsenRecord]);
+
   const handleUsbKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -728,7 +917,7 @@ export default function NFCAttendanceApp() {
   }, []);
 
   const [expandedMenus, setExpandedMenus] = useState<Record<string, boolean>>({
-    statistik: true,
+    presensi: true,
     peserta: false,
     registrasi: false,
     plotting: true,
@@ -761,10 +950,10 @@ export default function NFCAttendanceApp() {
           {/* Desktop sidebar collapse toggle */}
           <button
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-2 hover:bg-white/10 rounded-xl transition-colors hidden lg:flex text-white items-center justify-center"
-            title={isSidebarOpen ? "Sembunyikan Label Sidebar" : "Tampilkan Label Sidebar"}
+            className="p-2 hover:bg-white/10 rounded-xl transition-colors hidden lg:flex text-white items-center justify-center cursor-pointer"
+            title={isSidebarOpen ? "Sembunyikan Menu Sidebar" : "Tampilkan Menu Sidebar"}
           >
-            {isSidebarOpen ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            {isSidebarOpen ? <ChevronLeft className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
 
           {/* Logo & App Title */}
@@ -791,11 +980,46 @@ export default function NFCAttendanceApp() {
           </div>
         </div>
 
-        {/* Right side status badge */}
-        <div className="flex items-center gap-2">
-          <div className="px-3 py-1 bg-white/10 border border-white/20 text-white rounded-full text-xs font-medium backdrop-blur-sm hidden sm:flex items-center gap-1.5">
+        {/* Right side status & User Profile */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {currentUser ? (
+            <div className="flex items-center gap-2">
+              <div className="hidden sm:flex items-center gap-2 bg-white/10 border border-white/20 px-3 py-1.5 rounded-xl backdrop-blur-xs">
+                <div className="w-6 h-6 rounded-full bg-white text-[#203598] font-bold text-xs flex items-center justify-center shadow-xs">
+                  {currentUser.nama_lengkap.charAt(0).toUpperCase()}
+                </div>
+                <div className="text-left">
+                  <div className="text-xs font-bold leading-tight text-white max-w-[150px] truncate">
+                    {currentUser.nama_lengkap}
+                  </div>
+                  <div className="text-[10px] text-blue-200 font-semibold leading-tight capitalize">
+                    {currentUser.role_label}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/20 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                title="Ganti Role Pengguna / Keluar"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="hidden xs:inline">Ganti Role</span>
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsAuthModalOpen(true)}
+              className="px-3.5 py-1.5 bg-white text-[#203598] hover:bg-blue-50 font-bold rounded-xl text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Pilih Role</span>
+            </button>
+          )}
+
+          <div className="px-2.5 py-1 bg-white/10 border border-white/20 text-white rounded-full text-[11px] font-medium backdrop-blur-sm hidden md:flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>Sistem Kehadiran</span>
+            <span>Online</span>
           </div>
         </div>
       </header>
@@ -813,298 +1037,355 @@ export default function NFCAttendanceApp() {
         {/* Sidebar Navigation */}
         <aside
           className={`
-            fixed lg:static inset-y-0 left-0 z-40 bg-white border-r border-slate-200 flex flex-col justify-between transition-all duration-300 ease-in-out shadow-lg lg:shadow-none
-            ${isSidebarOpen ? "w-64" : "w-24"}
-            ${isMobileOpen ? "translate-x-0 w-64" : "-translate-x-full lg:translate-x-0"}
+            fixed lg:static inset-y-0 left-0 z-40 bg-white flex flex-col justify-between transition-all duration-300 ease-in-out shadow-lg lg:shadow-none overflow-hidden
+            ${isSidebarOpen ? "w-64 border-r border-slate-200 opacity-100 visible" : "w-0 border-r-0 p-0 opacity-0 invisible pointer-events-none -translate-x-full lg:translate-x-0"}
+            ${isMobileOpen ? "translate-x-0 !w-64 !opacity-100 !visible !pointer-events-auto !border-r !border-slate-200" : ""}
           `}
         >
           {/* Sidebar Navigation Items */}
-          <div className="p-3 space-y-3 overflow-y-auto flex-1">
-            <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-              Menu Utama
+          <div className="p-3 space-y-3 overflow-y-auto overflow-x-hidden flex-1 min-w-[256px]">
+            <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+              <span>Menu Akses</span>
+              {currentUser && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold capitalize">
+                  {currentUser.role_label}
+                </span>
+              )}
             </div>
 
-            {/* Presensi */}
-            <div className="space-y-1">
-              <button
-                onClick={() => {
-                  setActiveTab("presensi");
-                  setIsMobileOpen(false);
-                }}
-                className={`w-full px-3.5 py-2.5 rounded-xl text-left font-bold text-sm transition-all flex items-center justify-between ${
-                  activeTab === "presensi"
-                    ? "bg-[#203598] text-white shadow-md shadow-[#203598]/20"
-                    : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
-                }`}
-              >
-                <span>Presensi Kehadiran</span>
-                <span className="text-[10px] font-extrabold bg-emerald-500 text-white px-1.5 py-0.5 rounded-md">
-                  USB / NFC
-                </span>
-              </button>
-            </div>
+            {/* Presensi Dropdown Menu */}
+            {(isTabAllowed("presensi") || isTabAllowed("presensi_grafik") || isTabAllowed("presensi_izin")) && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => toggleSubmenu("presensi")}
+                  className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Nfc className="w-4 h-4 text-[#203598]" />
+                    <span>Presensi</span>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      expandedMenus.presensi ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
 
-            {/* Statistik Kehadiran (Donut Chart) */}
-            <div className="space-y-1">
-              <button
-                onClick={() => {
-                  setActiveTab("statistik");
-                  setIsMobileOpen(false);
-                }}
-                className={`w-full px-3.5 py-2.5 rounded-xl text-left font-bold text-sm transition-all flex items-center justify-between ${
-                  activeTab === "statistik"
-                    ? "bg-[#203598] text-white shadow-md shadow-[#203598]/20"
-                    : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <PieChart className="w-4 h-4 text-emerald-500" />
-                  <span>Statistik Sesi</span>
-                </div>
-                <span className="text-[10px] font-extrabold bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-md">
-                  Donat
-                </span>
-              </button>
-            </div>
+                {expandedMenus.presensi && (
+                  <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                    {isTabAllowed("presensi") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("presensi");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all flex items-center justify-between cursor-pointer ${
+                          activeTab === "presensi"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        <span>Tap Kartu (Scanner)</span>
+                      </button>
+                    )}
+
+                    {isTabAllowed("presensi_grafik") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("presensi_grafik");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all flex items-center justify-between cursor-pointer ${
+                          activeTab === "presensi_grafik" || activeTab === "statistik"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        <span>Grafik Presensi</span>
+                      </button>
+                    )}
+
+                    {isTabAllowed("presensi_izin") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("presensi_izin");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all flex items-center justify-between cursor-pointer ${
+                          activeTab === "presensi_izin"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        <span>Perizinan Sesi</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Peserta */}
-            <div className="space-y-1">
-              <button
-                onClick={() => toggleSubmenu("peserta")}
-                className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
-              >
-                <span>Peserta</span>
-                <ChevronDown
-                  className={`w-4 h-4 text-slate-400 transition-transform ${
-                    expandedMenus.peserta ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
-
-              {expandedMenus.peserta && (
-                <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
-                  <button
-                    onClick={() => {
-                      setActiveTab("peserta");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "peserta"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            {isTabAllowed("peserta") && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => toggleSubmenu("peserta")}
+                  className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Users className="w-4 h-4 text-[#203598]" />
+                    <span>Peserta</span>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      expandedMenus.peserta ? "rotate-180" : ""
                     }`}
-                  >
-                    Data Peserta
-                  </button>
-                </div>
-              )}
-            </div>
+                  />
+                </button>
+
+                {expandedMenus.peserta && (
+                  <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                    <button
+                      onClick={() => {
+                        setActiveTab("peserta");
+                        setIsMobileOpen(false);
+                      }}
+                      className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                        activeTab === "peserta"
+                          ? "bg-[#203598] text-white shadow-sm"
+                          : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                      }`}
+                    >
+                      Data Peserta
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Registrasi */}
-            <div className="space-y-1">
-              <button
-                onClick={() => toggleSubmenu("registrasi")}
-                className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
-              >
-                <span>Registrasi</span>
-                <ChevronDown
-                  className={`w-4 h-4 text-slate-400 transition-transform ${
-                    expandedMenus.registrasi ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
+            {(isTabAllowed("input") || isTabAllowed("nfc")) && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => toggleSubmenu("registrasi")}
+                  className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <UserPlus className="w-4 h-4 text-[#203598]" />
+                    <span>Registrasi</span>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      expandedMenus.registrasi ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
 
-              {expandedMenus.registrasi && (
-                <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
-                  <button
-                    onClick={() => {
-                      setActiveTab("input");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "input"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    Input Peserta
-                  </button>
-                  <button
-                    onClick={() => {
-                      setActiveTab("nfc");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "nfc"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    Input NFC
-                  </button>
-                </div>
-              )}
-            </div>
+                {expandedMenus.registrasi && (
+                  <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                    {isTabAllowed("input") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("input");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === "input"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        Input Peserta
+                      </button>
+                    )}
+                    {isTabAllowed("nfc") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("nfc");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === "nfc"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        Input NFC
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Plotting */}
-            <div className="space-y-1">
-              <button
-                onClick={() => toggleSubmenu("plotting")}
-                className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
-              >
-                <span>Plotting</span>
-                <ChevronDown
-                  className={`w-4 h-4 text-slate-400 transition-transform ${
-                    expandedMenus.plotting ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
-
-              {expandedMenus.plotting && (
-                <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
-                  <button
-                    onClick={() => {
-                      setActiveTab("plotting_tenda");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "plotting_tenda"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            {(isTabAllowed("plotting_tenda") || isTabAllowed("plotting_fgd")) && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => toggleSubmenu("plotting")}
+                  className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Table className="w-4 h-4 text-[#203598]" />
+                    <span>Plotting</span>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      expandedMenus.plotting ? "rotate-180" : ""
                     }`}
-                  >
-                    Tenda
-                  </button>
+                  />
+                </button>
 
-                  <button
-                    onClick={() => {
-                      setActiveTab("plotting_fgd");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "plotting_fgd"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    FGD
-                  </button>
-                </div>
-              )}
-            </div>
+                {expandedMenus.plotting && (
+                  <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                    {isTabAllowed("plotting_tenda") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("plotting_tenda");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === "plotting_tenda"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        Tenda
+                      </button>
+                    )}
+
+                    {isTabAllowed("plotting_fgd") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("plotting_fgd");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === "plotting_fgd"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        FGD
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Jadwal */}
-            <div className="space-y-1">
-              <button
-                onClick={() => {
-                  toggleSubmenu("jadwal");
-                  toggleSubmenu("sesi");
-                }}
-                className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
-              >
-                <span>Jadwal</span>
-                <ChevronDown
-                  className={`w-4 h-4 text-slate-400 transition-transform ${
-                    expandedMenus.jadwal || expandedMenus.sesi ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
-
-              {(expandedMenus.jadwal || expandedMenus.sesi) && (
-                <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
-                  <button
-                    onClick={() => {
-                      setActiveTab("jadwal_materi");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "jadwal_materi" || activeTab === "sesi"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            {(isTabAllowed("jadwal_materi") || isTabAllowed("jadwal_makan") || isTabAllowed("jadwal_sholat")) && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => {
+                    toggleSubmenu("jadwal");
+                    toggleSubmenu("sesi");
+                  }}
+                  className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-[#203598]" />
+                    <span>Jadwal</span>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      expandedMenus.jadwal || expandedMenus.sesi ? "rotate-180" : ""
                     }`}
-                  >
-                    Materi
-                  </button>
+                  />
+                </button>
 
-                  <button
-                    onClick={() => {
-                      setActiveTab("jadwal_makan");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "jadwal_makan"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    Makan
-                  </button>
+                {(expandedMenus.jadwal || expandedMenus.sesi) && (
+                  <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                    {isTabAllowed("jadwal_materi") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("jadwal_materi");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === "jadwal_materi" || activeTab === "sesi"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        Materi
+                      </button>
+                    )}
 
-                  <button
-                    onClick={() => {
-                      setActiveTab("jadwal_sholat");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "jadwal_sholat"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    Sholat
-                  </button>
-                </div>
-              )}
-            </div>
+                    {isTabAllowed("jadwal_makan") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("jadwal_makan");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === "jadwal_makan"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        Makan
+                      </button>
+                    )}
+
+                    {isTabAllowed("jadwal_sholat") && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("jadwal_sholat");
+                          setIsMobileOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                          activeTab === "jadwal_sholat"
+                            ? "bg-[#203598] text-white shadow-sm"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                      >
+                        Sholat
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Rekap */}
-            <div className="space-y-1">
-              <button
-                onClick={() => toggleSubmenu("rekap")}
-                className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors"
-              >
-                <span>Rekap</span>
-                <ChevronDown
-                  className={`w-4 h-4 text-slate-400 transition-transform ${
-                    expandedMenus.rekap ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
+            {isTabAllowed("rekap_presensi") && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => toggleSubmenu("rekap")}
+                  className="w-full px-3.5 py-2 rounded-xl text-left font-bold text-sm text-slate-700 hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <PieChart className="w-4 h-4 text-[#203598]" />
+                    <span>Rekap</span>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      expandedMenus.rekap ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
 
-              {expandedMenus.rekap && (
-                <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
-                  <button
-                    onClick={() => {
-                      setActiveTab("rekap_presensi");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all ${
-                      activeTab === "rekap_presensi"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    Presensi
-                  </button>
-                  <button
-                    onClick={() => {
-                      setActiveTab("statistik");
-                      setIsMobileOpen(false);
-                    }}
-                    className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all flex items-center justify-between ${
-                      activeTab === "statistik"
-                        ? "bg-[#203598] text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    <span>Statistik Kehadiran</span>
-                    <span className="text-[9px] bg-emerald-500 text-white font-bold px-1 py-0.5 rounded">
-                      Donat
-                    </span>
-                  </button>
-                </div>
-              )}
-            </div>
+                {expandedMenus.rekap && (
+                  <div className="pl-3 space-y-1 border-l-2 border-slate-200 ml-4">
+                    <button
+                      onClick={() => {
+                        setActiveTab("rekap_presensi");
+                        setIsMobileOpen(false);
+                      }}
+                      className={`w-full px-3 py-2 rounded-lg text-left text-sm font-semibold transition-all cursor-pointer ${
+                        activeTab === "rekap_presensi"
+                          ? "bg-[#203598] text-white shadow-sm"
+                          : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                      }`}
+                    >
+                      Rekap Presensi
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Sidebar Footer */}
@@ -1117,7 +1398,13 @@ export default function NFCAttendanceApp() {
 
         {/* Main Content Area */}
         <main className="flex-1 p-3 md:p-5 max-w-7xl mx-auto w-full overflow-y-auto">
-          {activeTab === "statistik" && <StatistikKehadiran />}
+          {(activeTab === "presensi_grafik" || activeTab === "statistik") && (
+            <StatistikKehadiran defaultSessionName={activeSession?.nama_sesi} />
+          )}
+
+          {activeTab === "presensi_izin" && (
+            <PerizinanSesi activeSessionName={activeSession?.nama_sesi} />
+          )}
 
           {activeTab === "rekap_presensi" && <RekapPresensi />}
 
@@ -1458,10 +1745,15 @@ export default function NFCAttendanceApp() {
                       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full"></span>
                       <span className="w-1.5 h-1.5 bg-slate-300 rounded-full"></span>
                       <span className="w-1.5 h-1.5 bg-slate-300 rounded-full"></span>
-                      <span className="text-slate-400 text-[10px] font-medium ml-1">Halaman 1</span>
+                      <span className="text-slate-400 text-[10px] font-medium ml-1">Live Feed Presensi</span>
                     </div>
                   </div>
                 </section>
+              </div>
+
+              {/* Integrated Session Attendance Statistics & Donut Chart */}
+              <div className="pt-3 border-t border-slate-200/80">
+                <StatistikKehadiran embedded={true} defaultSessionName={activeSession?.nama_sesi} />
               </div>
             </div>
           )}
@@ -1484,6 +1776,12 @@ export default function NFCAttendanceApp() {
           setDialogState((prev) => ({ ...prev, isOpen: false }));
           focusUsbInput();
         }}
+      />
+
+      {/* Role & User Auth Modal */}
+      <AuthRoleModal
+        isOpen={isAuthModalOpen}
+        onLoginSuccess={handleLoginSuccess}
       />
 
       {/* Bottom Status Bar */}

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Nfc, Search, Check, Save, AlertCircle, CheckCircle2, Copy, RefreshCw, UserCheck, Database, Code, Info } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { hexToDecimal } from "@/lib/utils";
+import { hexToDecimal, toTitleCase } from "@/lib/utils";
 
 interface Peserta {
   id: number;
@@ -12,6 +12,8 @@ interface Peserta {
   dapukan?: string;
   tenda?: string;
   grup_fgd?: string;
+  foto?: string | null;
+  foto_url?: string | null;
 }
 
 const NFC_TABLE_SQL = `-- Skrip SQL untuk membuat tabel 'nfc_peserta' di Supabase
@@ -71,13 +73,23 @@ export default function InputNFCPesertaForm() {
     try {
       const { data, error } = await supabase
         .from("peserta")
-        .select("id, nama, kelompok, dapukan, tenda, grup_fgd")
+        .select("*")
         .order("nama", { ascending: true });
 
       if (error) {
         console.error("Error fetching peserta:", error);
       } else {
-        setPesertaList(data || []);
+        const formatted: Peserta[] = (data || []).map((p: any) => ({
+          ...p,
+          nama: toTitleCase(p.nama || p.nama_peserta || ""),
+          kelompok: p.kelompok ? toTitleCase(p.kelompok) : "-",
+          dapukan: p.dapukan ? toTitleCase(p.dapukan) : "-",
+          tenda: (p.tenda || p.grup) ? toTitleCase(p.tenda || p.grup) : "-",
+          grup_fgd: p.grup_fgd ? toTitleCase(p.grup_fgd) : "-",
+          foto: p.foto || p.foto_url || null,
+          foto_url: p.foto || p.foto_url || null,
+        }));
+        setPesertaList(formatted);
       }
     } catch (err) {
       console.error("Error fetching peserta:", err);
@@ -169,20 +181,67 @@ export default function InputNFCPesertaForm() {
     };
 
     try {
-      // Upsert or Insert to nfc_peserta table
-      const { data, error } = await supabase
+      // Upsert to nfc_peserta table with automatic column fallback
+      let { data, error } = await supabase
         .from("nfc_peserta")
         .upsert([payload], { onConflict: "nfc_uid" })
         .select();
 
+      if (error && (error.code === "42703" || error.message?.includes("does not exist"))) {
+        // Fallback: use 'grup' instead of 'tenda'
+        const payloadGrup = {
+          nfc_uid: uidClean,
+          peserta_id: selectedPeserta.id,
+          nama: selectedPeserta.nama,
+          kelompok: selectedPeserta.kelompok || "-",
+          dapukan: selectedPeserta.dapukan || "-",
+          grup: selectedPeserta.tenda || "-",
+          grup_fgd: selectedPeserta.grup_fgd || "-",
+        };
+        const resGrup = await supabase
+          .from("nfc_peserta")
+          .upsert([payloadGrup], { onConflict: "nfc_uid" })
+          .select();
+
+        if (resGrup.error && (resGrup.error.code === "42703" || resGrup.error.message?.includes("does not exist"))) {
+          // Fallback: minimal columns (nfc_uid, peserta_id, nama, kelompok)
+          const payloadCore = {
+            nfc_uid: uidClean,
+            peserta_id: selectedPeserta.id,
+            nama: selectedPeserta.nama,
+            kelompok: selectedPeserta.kelompok || "-",
+          };
+          const resCore = await supabase
+            .from("nfc_peserta")
+            .upsert([payloadCore], { onConflict: "nfc_uid" })
+            .select();
+
+          error = resCore.error;
+        } else {
+          error = resGrup.error;
+        }
+      }
+
       if (error) {
-        // Check for fallback insert if upsert fails
+        // Check for fallback insert if upsert is rejected or unsupported
         const { error: insertErr } = await supabase
           .from("nfc_peserta")
           .insert([payload]);
 
         if (insertErr) {
-          throw insertErr;
+          const payloadCore = {
+            nfc_uid: uidClean,
+            peserta_id: selectedPeserta.id,
+            nama: selectedPeserta.nama,
+            kelompok: selectedPeserta.kelompok || "-",
+          };
+          const { error: insertCoreErr } = await supabase
+            .from("nfc_peserta")
+            .insert([payloadCore]);
+
+          if (insertCoreErr) {
+            throw insertCoreErr;
+          }
         }
       }
 
@@ -419,24 +478,36 @@ export default function InputNFCPesertaForm() {
                 ) : (
                   filteredPeserta.map((p) => {
                     const isSelected = selectedPeserta?.id === p.id;
+                    const photoSrc = p.foto || p.foto_url;
                     return (
                       <button
                         key={p.id}
                         type="button"
                         onClick={() => setSelectedPeserta(p)}
-                        className={`w-full px-4 py-2.5 text-left text-xs flex items-center justify-between transition-colors ${
+                        className={`w-full px-4 py-2.5 text-left text-xs flex items-center justify-between gap-3 transition-colors ${
                           isSelected
                             ? "bg-[#203598] text-white font-semibold"
                             : "hover:bg-slate-100 text-slate-700"
                         }`}
                       >
-                        <div>
-                          <div className="font-bold text-sm">{p.nama}</div>
-                          <div className={`text-[11px] flex flex-wrap items-center gap-2 mt-0.5 ${isSelected ? "text-blue-100" : "text-slate-500"}`}>
-                            <span>Kelompok: {p.kelompok || "-"}</span>
-                            {p.dapukan && p.dapukan !== "-" && <span>• Dapukan: {p.dapukan}</span>}
-                            {p.tenda && p.tenda !== "-" && <span>• Tenda: {p.tenda}</span>}
-                            {p.grup_fgd && p.grup_fgd !== "-" && <span>• FGD: {p.grup_fgd}</span>}
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`w-8 h-8 rounded-lg overflow-hidden shrink-0 flex items-center justify-center font-bold text-xs ${
+                            isSelected ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700"
+                          }`}>
+                            {photoSrc ? (
+                              <img src={photoSrc} alt={p.nama} className="w-full h-full object-cover" />
+                            ) : (
+                              <span>{p.nama.charAt(0).toUpperCase()}</span>
+                            )}
+                          </div>
+                          <div className="truncate">
+                            <div className="font-bold text-sm truncate">{p.nama}</div>
+                            <div className={`text-[11px] flex flex-wrap items-center gap-2 mt-0.5 ${isSelected ? "text-blue-100" : "text-slate-500"}`}>
+                              <span>Kelompok: {p.kelompok || "-"}</span>
+                              {p.dapukan && p.dapukan !== "-" && <span>• Dapukan: {p.dapukan}</span>}
+                              {p.tenda && p.tenda !== "-" && <span>• Tenda: {p.tenda}</span>}
+                              {p.grup_fgd && p.grup_fgd !== "-" && <span>• FGD: {p.grup_fgd}</span>}
+                            </div>
                           </div>
                         </div>
                         {isSelected && <Check className="w-4 h-4 text-white shrink-0" />}
@@ -453,26 +524,39 @@ export default function InputNFCPesertaForm() {
                 Peserta Terpilih
               </label>
               {selectedPeserta ? (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between">
-                  <div>
-                    <div className="font-bold text-sm text-emerald-900">{selectedPeserta.nama}</div>
-                    <div className="text-xs text-emerald-700 flex flex-wrap gap-2 mt-1">
-                      <span className="font-medium">Kelompok: {selectedPeserta.kelompok || "-"}</span>
-                      {selectedPeserta.dapukan && selectedPeserta.dapukan !== "-" && (
-                        <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
-                          Dapukan: {selectedPeserta.dapukan}
-                        </span>
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl overflow-hidden bg-emerald-200 flex items-center justify-center font-bold text-emerald-800 text-sm shrink-0 border border-emerald-300">
+                      {(selectedPeserta.foto || selectedPeserta.foto_url) ? (
+                        <img
+                          src={selectedPeserta.foto || selectedPeserta.foto_url || ""}
+                          alt={selectedPeserta.nama}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span>{selectedPeserta.nama.charAt(0).toUpperCase()}</span>
                       )}
-                      {selectedPeserta.tenda && selectedPeserta.tenda !== "-" && (
-                        <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
-                          Tenda: {selectedPeserta.tenda}
-                        </span>
-                      )}
-                      {selectedPeserta.grup_fgd && selectedPeserta.grup_fgd !== "-" && (
-                        <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
-                          FGD: {selectedPeserta.grup_fgd}
-                        </span>
-                      )}
+                    </div>
+                    <div>
+                      <div className="font-bold text-sm text-emerald-900">{selectedPeserta.nama}</div>
+                      <div className="text-xs text-emerald-700 flex flex-wrap gap-2 mt-1">
+                        <span className="font-medium">Kelompok: {selectedPeserta.kelompok || "-"}</span>
+                        {selectedPeserta.dapukan && selectedPeserta.dapukan !== "-" && (
+                          <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
+                            Dapukan: {selectedPeserta.dapukan}
+                          </span>
+                        )}
+                        {selectedPeserta.tenda && selectedPeserta.tenda !== "-" && (
+                          <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
+                            Tenda: {selectedPeserta.tenda}
+                          </span>
+                        )}
+                        {selectedPeserta.grup_fgd && selectedPeserta.grup_fgd !== "-" && (
+                          <span className="px-1.5 py-0.5 bg-emerald-100/80 text-emerald-800 rounded text-[10px]">
+                            FGD: {selectedPeserta.grup_fgd}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <UserCheck className="w-5 h-5 text-emerald-600 shrink-0" />

@@ -6,6 +6,21 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * Mengubah string menjadi format Capitalize / Title Case (Huruf besar di awal setiap kata)
+ * Contoh: "abda zaky fauzi" -> "Abda Zaky Fauzi"
+ *         "ABDUL MUJIB" -> "Abdul Mujib"
+ */
+export function toTitleCase(str: string | null | undefined): string {
+  if (!str) return "";
+  return String(str)
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/**
  * Mengonversi UID Heksadesimal NFC (contoh Android Web NFC: "31:79:E8:A7")
  * menjadi format Desimal murni (contoh: "2817030449").
  * 

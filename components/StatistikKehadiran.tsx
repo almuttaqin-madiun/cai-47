@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
-import { hexToDecimal } from "@/lib/utils";
+import { hexToDecimal, toTitleCase } from "@/lib/utils";
 import { SesiAbsensi } from "./ManajemenSesi";
 
 interface Peserta {
@@ -476,7 +476,12 @@ function ModernDonutChart({
 // -------------------------------------------------------------
 // Main Component: StatistikKehadiran
 // -------------------------------------------------------------
-export default function StatistikKehadiran() {
+interface StatistikKehadiranProps {
+  embedded?: boolean;
+  defaultSessionName?: string;
+}
+
+export default function StatistikKehadiran({ embedded = false, defaultSessionName }: StatistikKehadiranProps = {}) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -516,17 +521,25 @@ export default function StatistikKehadiran() {
         }
       }
 
-      const pList: Peserta[] = (resPeserta.data || []).map((p: any) => ({
-        id: p.id,
-        nama: p.nama || p.nama_peserta || "-",
-        kelompok: p.kelompok || "-",
-        dapukan: p.dapukan || "-",
-        tenda: p.tenda || p.grup || "-",
-        grup: p.grup || p.tenda || "-",
-        grup_fgd: p.grup_fgd || "-",
-        jenis_kelamin: p.jenis_kelamin || (p.nama?.toLowerCase().includes("binti") ? "P" : "L"),
-        nfc_uid: p.nfc_uid || p.serial_number || nfcMap.get((p.nama || "").trim().toLowerCase()) || "",
-      }));
+      const pList: Peserta[] = (resPeserta.data || []).map((p: any) => {
+        const rawName = p.nama || p.nama_peserta || "-";
+        const rawKel = p.kelompok || "-";
+        const rawDap = p.dapukan || "-";
+        const rawTen = p.tenda || p.grup || "-";
+        const rawFgd = p.grup_fgd || "-";
+
+        return {
+          id: p.id,
+          nama: rawName !== "-" ? toTitleCase(rawName) : "-",
+          kelompok: rawKel !== "-" ? toTitleCase(rawKel) : "-",
+          dapukan: rawDap !== "-" ? toTitleCase(rawDap) : "-",
+          tenda: rawTen !== "-" ? toTitleCase(rawTen) : "-",
+          grup: rawTen !== "-" ? toTitleCase(rawTen) : "-",
+          grup_fgd: rawFgd !== "-" ? toTitleCase(rawFgd) : "-",
+          jenis_kelamin: p.jenis_kelamin || (rawName.toLowerCase().includes("binti") ? "P" : "L"),
+          nfc_uid: p.nfc_uid || p.serial_number || nfcMap.get(rawName.trim().toLowerCase()) || "",
+        };
+      });
       setPesertaList(pList);
 
       // 2. Process Sessions
@@ -558,8 +571,14 @@ export default function StatistikKehadiran() {
 
       const addRecord = (item: any) => {
         const uid = hexToDecimal(String(item.serial_number || "").trim(), true);
-        const name = (item.nama_peserta || item.nama || "").trim();
-        const sesi = (item.sesi_nama || "Umum").trim();
+        const rawName = (item.nama_peserta || item.nama || "").trim();
+        const rawSesi = (item.sesi_nama || "Umum").trim();
+        const rawKel = item.kelompok || "-";
+        const rawTen = item.tenda || item.grup || "-";
+        const rawFgd = item.grup_fgd || "-";
+
+        const name = rawName ? toTitleCase(rawName) : "Peserta NFC";
+        const sesi = rawSesi ? toTitleCase(rawSesi) : "Umum";
         const key = `${uid}_${sesi}_${item.timestamp ? new Date(item.timestamp).toISOString().split("T")[0] : ""}`;
 
         const isLate = item.status_kehadiran === "Terlambat" || Number(item.menit_terlambat || 0) > 0;
@@ -575,10 +594,10 @@ export default function StatistikKehadiran() {
             jadwal: item.jadwal || item.kategori || "materi",
             kategori: item.kategori || item.jadwal || "materi",
             timestamp: item.timestamp || new Date(),
-            kelompok: item.kelompok,
-            tenda: item.tenda || item.grup,
-            grup: item.grup || item.tenda,
-            grup_fgd: item.grup_fgd,
+            kelompok: rawKel !== "-" ? toTitleCase(rawKel) : "-",
+            tenda: rawTen !== "-" ? toTitleCase(rawTen) : "-",
+            grup: rawTen !== "-" ? toTitleCase(rawTen) : "-",
+            grup_fgd: rawFgd !== "-" ? toTitleCase(rawFgd) : "-",
             jenis_kelamin: item.jenis_kelamin,
             status_kehadiran: isLate ? "Terlambat" : (item.status_kehadiran || "Tepat Waktu"),
             menit_terlambat: Number(item.menit_terlambat || 0),
@@ -807,6 +826,13 @@ export default function StatistikKehadiran() {
   // Default select the first active/ongoing session or first available session
   useEffect(() => {
     if (sessionStats.length > 0 && !selectedSessionKey) {
+      if (defaultSessionName) {
+        const matched = sessionStats.find((s) => s.sessionName.toLowerCase() === defaultSessionName.toLowerCase());
+        if (matched) {
+          setSelectedSessionKey(matched.sessionKey);
+          return;
+        }
+      }
       const ongoing = sessionStats.find((s) => s.isOngoing);
       if (ongoing) {
         setSelectedSessionKey(ongoing.sessionKey);
@@ -814,7 +840,7 @@ export default function StatistikKehadiran() {
         setSelectedSessionKey(sessionStats[0].sessionKey);
       }
     }
-  }, [sessionStats, selectedSessionKey]);
+  }, [sessionStats, selectedSessionKey, defaultSessionName]);
 
   // Current Active Selected Session Detail
   const currentSelectedStat = useMemo<SessionAttendanceStat | null>(() => {

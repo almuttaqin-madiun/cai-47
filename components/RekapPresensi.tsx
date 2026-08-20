@@ -25,6 +25,7 @@ import {
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
+import { toTitleCase } from "@/lib/utils";
 
 interface RekapItem {
   id: string;
@@ -54,6 +55,8 @@ interface PesertaMeta {
   grup?: string;
   tenda?: string;
   grup_fgd?: string;
+  foto?: string;
+  foto_url?: string;
 }
 
 export default function RekapPresensi() {
@@ -221,11 +224,17 @@ export default function RekapPresensi() {
           const nama = (d.nama_peserta || d.nama || "Peserta NFC").trim();
           const meta = metaMap.get(uid) || metaMap.get(nama.toLowerCase());
 
-          const kelompok = meta?.kelompok || d.kelompok || "-";
-          const dapukan = meta?.dapukan || d.dapukan || "-";
-          const tenda = meta?.grup || meta?.tenda || d.grup || d.tenda || "-";
-          const grupFgd = meta?.grup_fgd || d.grup_fgd || "-";
-          const sesiNama = d.sesi_nama || "Umum";
+          const rawKel = meta?.kelompok || d.kelompok || "-";
+          const rawDap = meta?.dapukan || d.dapukan || "-";
+          const rawTen = meta?.grup || meta?.tenda || d.grup || d.tenda || "-";
+          const rawFgd = meta?.grup_fgd || d.grup_fgd || "-";
+          const rawSesi = d.sesi_nama || "Umum";
+
+          const kelompok = rawKel !== "-" ? toTitleCase(rawKel) : "-";
+          const dapukan = rawDap !== "-" ? toTitleCase(rawDap) : "-";
+          const tenda = rawTen !== "-" ? toTitleCase(rawTen) : "-";
+          const grupFgd = rawFgd !== "-" ? toTitleCase(rawFgd) : "-";
+          const sesiNama = toTitleCase(rawSesi);
 
           let rawJadwal = String(d.jadwal || d.kategori || "").toLowerCase();
           if (!rawJadwal) {
@@ -254,12 +263,13 @@ export default function RekapPresensi() {
           if (sesiNama) sesiSet.add(sesiNama);
           if (kelompok && kelompok !== "-") kelompokSet.add(kelompok);
 
-          const photoUrlData = supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uid}.jpg`);
+          const directPhotoUrl = uid ? supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uid}.jpg`)?.data?.publicUrl : "";
+          const resolvedPhotoUrl = meta?.foto || meta?.foto_url || directPhotoUrl || "";
 
           rawItems.push({
             id: `rw-${d.id}`,
             serialNumber: uid,
-            nama,
+            nama: toTitleCase(nama),
             kelompok,
             dapukan,
             tenda,
@@ -270,7 +280,7 @@ export default function RekapPresensi() {
             statusKehadiran: d.status_kehadiran || "Tepat Waktu",
             menitTerlambat: typeof d.menit_terlambat === "number" ? d.menit_terlambat : 0,
             waktuTelat: d.waktu_telat || "",
-            photoUrl: photoUrlData?.data?.publicUrl,
+            photoUrl: resolvedPhotoUrl,
             sourceTable: "riwayat_absen",
           });
         }
@@ -289,11 +299,17 @@ export default function RekapPresensi() {
             const nama = (d.nama || "Peserta NFC").trim();
             const meta = metaMap.get(uid) || metaMap.get(nama.toLowerCase());
 
-            const kelompok = meta?.kelompok || d.kelompok || "-";
-            const dapukan = meta?.dapukan || d.dapukan || "-";
-            const tenda = meta?.grup || meta?.tenda || d.grup || d.tenda || "-";
-            const grupFgd = meta?.grup_fgd || d.grup_fgd || "-";
-            const sesiNama = d.sesi_nama || "Umum";
+            const rawKel = meta?.kelompok || d.kelompok || "-";
+            const rawDap = meta?.dapukan || d.dapukan || "-";
+            const rawTen = meta?.grup || meta?.tenda || d.grup || d.tenda || "-";
+            const rawFgd = meta?.grup_fgd || d.grup_fgd || "-";
+            const rawSesi = d.sesi_nama || "Umum";
+
+            const kelompok = rawKel !== "-" ? toTitleCase(rawKel) : "-";
+            const dapukan = rawDap !== "-" ? toTitleCase(rawDap) : "-";
+            const tenda = rawTen !== "-" ? toTitleCase(rawTen) : "-";
+            const grupFgd = rawFgd !== "-" ? toTitleCase(rawFgd) : "-";
+            const sesiNama = toTitleCase(rawSesi);
 
             let rawJadwal = String(d.jadwal || d.kategori || "").toLowerCase();
             if (!rawJadwal) {
@@ -322,12 +338,13 @@ export default function RekapPresensi() {
             if (sesiNama) sesiSet.add(sesiNama);
             if (kelompok && kelompok !== "-") kelompokSet.add(kelompok);
 
-            const photoUrlData = supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uid}.jpg`);
+            const directPhotoUrl = uid ? supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uid}.jpg`)?.data?.publicUrl : "";
+            const resolvedPhotoUrl = meta?.foto || meta?.foto_url || directPhotoUrl || "";
 
             rawItems.push({
               id: `keh-${d.id}`,
               serialNumber: uid,
-              nama,
+              nama: toTitleCase(nama),
               kelompok,
               dapukan,
               tenda,
@@ -338,7 +355,7 @@ export default function RekapPresensi() {
               statusKehadiran: d.status_kehadiran || "Tepat Waktu",
               menitTerlambat: typeof d.menit_terlambat === "number" ? d.menit_terlambat : 0,
               waktuTelat: d.waktu_telat || "",
-              photoUrl: photoUrlData?.data?.publicUrl,
+              photoUrl: resolvedPhotoUrl,
               sourceTable: "kehadiran",
             });
           }
@@ -918,7 +935,11 @@ export default function RekapPresensi() {
                     <td className="py-3.5 px-4 font-normal">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 rounded-lg overflow-hidden shrink-0 flex items-center justify-center font-bold text-xs bg-blue-100 text-[#1d4ed8] border border-blue-200">
-                          {item.nama ? item.nama.charAt(0).toUpperCase() : "U"}
+                          {item.photoUrl ? (
+                            <img src={item.photoUrl} alt={item.nama} className="w-full h-full object-cover" />
+                          ) : (
+                            <span>{item.nama ? item.nama.charAt(0).toUpperCase() : "U"}</span>
+                          )}
                         </div>
                         <div>
                           <div className="font-semibold text-slate-900 text-xs md:text-sm">

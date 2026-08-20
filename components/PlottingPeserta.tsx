@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
+import { toTitleCase } from "@/lib/utils";
 
 export interface PesertaItem {
   id: number;
@@ -199,7 +200,15 @@ export default function PlottingPeserta({ type }: PlottingPesertaProps) {
 
       if (pesertaRes.status === "fulfilled") {
         if (pesertaRes.value.error) throw pesertaRes.value.error;
-        setPesertaList(pesertaRes.value.data || []);
+        const formatted: PesertaItem[] = (pesertaRes.value.data || []).map((p: any) => ({
+          ...p,
+          nama: toTitleCase(p.nama),
+          kelompok: p.kelompok ? toTitleCase(p.kelompok) : null,
+          dapukan: p.dapukan ? toTitleCase(p.dapukan) : null,
+          tenda: p.tenda ? toTitleCase(p.tenda) : null,
+          grup_fgd: p.grup_fgd ? toTitleCase(p.grup_fgd) : null,
+        }));
+        setPesertaList(formatted);
       } else {
         throw pesertaRes.reason;
       }
@@ -1397,11 +1406,22 @@ export default function PlottingPeserta({ type }: PlottingPesertaProps) {
 
                         {/* Nama & ID */}
                         <td className="py-3.5 px-4">
-                          <div className="font-semibold text-slate-900 leading-tight text-xs">
-                            {p.nama}
-                          </div>
-                          <div className="text-[11px] text-slate-400 mt-0.5 font-mono">
-                            {p.id ? `2801${String(p.id).padStart(4, "0")}` : "-"}
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0 flex items-center justify-center font-bold text-xs bg-blue-100 text-[#1d4ed8] border border-blue-200">
+                              {p.foto ? (
+                                <img src={p.foto} alt={p.nama} className="w-full h-full object-cover" />
+                              ) : (
+                                <span>{p.nama.charAt(0).toUpperCase()}</span>
+                              )}
+                            </div>
+                            <div>
+                              <div className="font-semibold text-slate-900 leading-tight text-xs">
+                                {p.nama}
+                              </div>
+                              <div className="text-[11px] text-slate-400 mt-0.5 font-mono">
+                                {p.id ? `2801${String(p.id).padStart(4, "0")}` : "-"}
+                              </div>
+                            </div>
                           </div>
                         </td>
 
@@ -1753,6 +1773,13 @@ export default function PlottingPeserta({ type }: PlottingPesertaProps) {
                       >
                         <div className="flex items-center gap-3">
                           <span className="text-slate-400 w-5 text-center font-mono">{idx + 1}</span>
+                          <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0 flex items-center justify-center font-bold text-xs bg-blue-100 text-[#1d4ed8] border border-blue-200">
+                            {p.foto ? (
+                              <img src={p.foto} alt={p.nama} className="w-full h-full object-cover" />
+                            ) : (
+                              <span>{p.nama.charAt(0).toUpperCase()}</span>
+                            )}
+                          </div>
                           <div>
                             <div className="font-semibold text-slate-900">{p.nama}</div>
                             <div className="text-[11px] text-slate-500">

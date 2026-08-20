@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
+import { toTitleCase } from "@/lib/utils";
 
 export interface SesiAbsensi {
   id: number;
@@ -162,6 +163,8 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
   // Form State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingSesi, setEditingSesi] = useState<SesiAbsensi | null>(null);
+  const [deletingSesi, setDeletingSesi] = useState<SesiAbsensi | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const getTodayString = () => {
     const today = new Date();
@@ -237,7 +240,11 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
         for (const item of resJadwal.data) {
           const key = `${item.id}-${item.nama_sesi}-${item.tanggal}-${item.jam_mulai}`;
           seenKeys.add(key);
-          combined.push(item);
+          combined.push({
+            ...item,
+            nama_sesi: toTitleCase(item.nama_sesi),
+            keterangan: item.keterangan ? toTitleCase(item.keterangan) : "",
+          });
         }
       }
 
@@ -245,7 +252,11 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
         for (const item of resSesi.data) {
           const key = `${item.id}-${item.nama_sesi}-${item.tanggal}-${item.jam_mulai}`;
           if (!seenKeys.has(key)) {
-            combined.push(item);
+            combined.push({
+              ...item,
+              nama_sesi: toTitleCase(item.nama_sesi),
+              keterangan: item.keterangan ? toTitleCase(item.keterangan) : "",
+            });
           }
         }
       }
@@ -479,14 +490,14 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
     const finalWaktuTelat = formWaktuTelat || calculateWaktuTelat(formJamMulai, formToleransiMenit);
 
     const payload = {
-      nama_sesi: formNamaSesi.trim(),
+      nama_sesi: toTitleCase(formNamaSesi.trim()),
       tanggal: formTanggal,
       jam_mulai: formJamMulai,
       jam_selesai: formJamSelesai,
       waktu_telat: finalWaktuTelat,
       toleransi_menit: formToleransiMenit,
       is_active: formIsActive,
-      keterangan: formKeterangan.trim(),
+      keterangan: formKeterangan.trim() ? toTitleCase(formKeterangan.trim()) : "",
       kategori: targetCat,
       jadwal: targetCat,
     };
@@ -567,21 +578,47 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
     }
   };
 
-  const handleDeleteSesi = async (id: number, nama: string) => {
-    if (!confirm(`Apakah Anda yakin ingin menghapus sesi "${nama}"?`)) return;
+  const handlePromptDelete = (sesi: SesiAbsensi) => {
+    setDeletingSesi(sesi);
+  };
+
+  const confirmDeleteSesi = async () => {
+    if (!deletingSesi) return;
+    const target = deletingSesi;
+    setIsDeleting(true);
 
     try {
-      await Promise.allSettled([
-        supabase.from("jadwal_absensi").delete().eq("id", id),
-        supabase.from("sesi_absensi").delete().eq("id", id),
-      ]);
-      const updated = sesiList.filter((s) => s.id !== id);
+      // 1. Optimistic removal from UI state immediately
+      const updated = sesiList.filter(
+        (s) => s.id !== target.id && !(s.nama_sesi === target.nama_sesi && s.tanggal === target.tanggal)
+      );
       setSesiList(updated);
       localStorage.setItem("cai_sesi_absensi", JSON.stringify(updated));
+
+      // 2. Delete from Supabase tables (by id, and also by nama_sesi + tanggal to clean both tables)
+      const deleteOps = [
+        supabase.from("jadwal_absensi").delete().eq("id", target.id),
+        supabase.from("sesi_absensi").delete().eq("id", target.id),
+      ];
+
+      if (target.nama_sesi) {
+        deleteOps.push(
+          supabase.from("jadwal_absensi").delete().match({ nama_sesi: target.nama_sesi, tanggal: target.tanggal }),
+          supabase.from("sesi_absensi").delete().match({ nama_sesi: target.nama_sesi, tanggal: target.tanggal })
+        );
+      }
+
+      await Promise.allSettled(deleteOps);
+
+      // Re-fetch to ensure sync
       await fetchSesiList();
-      setMessage({ type: "success", text: `Sesi "${nama}" telah dihapus.` });
-    } catch (err) {
+      setMessage({ type: "success", text: `Jadwal "${target.nama_sesi}" berhasil dihapus.` });
+    } catch (err: any) {
       console.error("Error deleting sesi:", err);
+      setMessage({ type: "error", text: "Gagal menghapus jadwal dari database." });
+    } finally {
+      setIsDeleting(false);
+      setDeletingSesi(null);
     }
   };
 
@@ -977,8 +1014,8 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
                           {/* Delete */}
                           <button
                             type="button"
-                            onClick={() => handleDeleteSesi(sesi.id, sesi.nama_sesi)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 bg-white hover:bg-rose-50 border border-slate-200 rounded-lg shadow-2xs transition-colors"
+                            onClick={() => handlePromptDelete(sesi)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 bg-white hover:bg-rose-50 border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
                             title="Hapus Sesi"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1342,6 +1379,59 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deletingSesi && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full overflow-hidden p-6 space-y-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="space-y-1 flex-1">
+                <h3 className="text-base font-extrabold text-slate-900">
+                  Hapus Jadwal Sesi?
+                </h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Apakah Anda yakin ingin menghapus jadwal <strong className="text-slate-800">&quot;{deletingSesi.nama_sesi}&quot;</strong> ({deletingSesi.tanggal}, {deletingSesi.jam_mulai.slice(0, 5)} - {deletingSesi.jam_selesai.slice(0, 5)} WIB)?
+                </p>
+                <p className="text-[11px] text-rose-600 font-medium pt-1">
+                  Tindakan ini akan menghapus data dari database.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDeletingSesi(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteSesi}
+                disabled={isDeleting}
+                className="px-4.5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/20 transition-all inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Ya, Hapus Jadwal</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
