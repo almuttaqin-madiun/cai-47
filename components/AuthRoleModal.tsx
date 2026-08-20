@@ -291,11 +291,11 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
                 Sistem Presensi CAI 2026
               </span>
               <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white mt-1">
-                {selectedRole ? "Verifikasi Nama Pengguna" : "Pilih Role Akses"}
+                {selectedRole ? "Cinta Alam Indonesia 2026" : "Pilih Role Akses"}
               </h2>
               <p className="text-xs text-blue-100/90 mt-0.5">
                 {selectedRole
-                  ? `Masuk sebagai ${selectedRole.title} menggunakan nama lengkap Anda`
+                  ? `Masuk sebagai ${selectedRole.title}`
                   : "Silakan pilih peran Anda untuk membuka menu yang sesuai"}
               </p>
             </div>
@@ -366,9 +366,6 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
                     <selectedRole.icon className="w-5 h-5" />
                   </div>
                   <div>
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Role Dipilih:
-                    </span>
                     <span className="font-extrabold text-sm text-slate-900">
                       {selectedRole.title}
                     </span>
@@ -398,10 +395,10 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
                 </div>
               )}
 
-              {/* Input Field Nama Lengkap */}
+              {/* Input Field Username */}
               <div className="space-y-1.5">
                 <label className="block text-xs font-bold text-slate-700">
-                  Nama Lengkap (Username) <span className="text-rose-500">*</span>
+                  Username <span className="text-rose-500">*</span>
                 </label>
                 <div className="relative">
                   <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -409,23 +406,11 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
                     type="text"
                     required
                     autoFocus
-                    placeholder="Contoh: Angie Seprisa Pamungkas"
+                    placeholder="Masukkan username"
                     value={namaLengkap}
                     onChange={(e) => setNamaLengkap(e.target.value)}
                     className="w-full pl-10 pr-4 py-2.5 text-xs sm:text-sm bg-white border border-slate-300 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#203598] focus:border-[#203598] text-slate-900 font-medium placeholder:text-slate-400 shadow-2xs"
                   />
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-slate-400 px-1 pt-0.5">
-                  <span>* Bebas menggunakan huruf besar atau huruf kecil</span>
-                  {selectedRole.id === "kesekertariatan" && (
-                    <button
-                      type="button"
-                      onClick={() => setNamaLengkap("angie seprisa pamungkas")}
-                      className="text-[#203598] hover:underline font-semibold cursor-pointer"
-                    >
-                      Gunakan Akun Angie
-                    </button>
-                  )}
                 </div>
               </div>
 
