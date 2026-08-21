@@ -180,13 +180,52 @@ export async function POST(req: NextRequest) {
       console.warn("Gagal mengecek batas telat sesi:", sesiErr);
     }
 
-    // 3. Simpan riwayat absensi ke tabel Supabase 'riwayat_absen' (atau 'kehadiran')
+    // 3. Cek Anti Dobel Absen (Satu nama / kartu dilarang absen 2x dalam sesi yang sama)
+    const targetSesiNama = sesi_nama || "Umum";
+    try {
+      const [checkRw, checkKeh] = await Promise.all([
+        supabase
+          .from("riwayat_absen")
+          .select("id, nama_peserta, serial_number, timestamp")
+          .eq("sesi_nama", targetSesiNama)
+          .or(`nama_peserta.ilike.${namaPengguna},serial_number.eq.${cleanUid}`)
+          .limit(1),
+        supabase
+          .from("kehadiran")
+          .select("id, nama, serial_number, timestamp")
+          .eq("sesi_nama", targetSesiNama)
+          .or(`nama.ilike.${namaPengguna},serial_number.eq.${cleanUid}`)
+          .limit(1),
+      ]);
+
+      const hasDuplicate =
+        (checkRw.data && checkRw.data.length > 0) ||
+        (checkKeh.data && checkKeh.data.length > 0);
+
+      if (hasDuplicate) {
+        return NextResponse.json(
+          {
+            success: false,
+            isDuplicate: true,
+            message: `Peserta "${namaPengguna}" sudah melakukan presensi pada sesi "${targetSesiNama}".`,
+            nama: namaPengguna,
+            serial_number: cleanUid,
+            sesi_nama: targetSesiNama,
+          },
+          { status: 409 }
+        );
+      }
+    } catch (checkErr) {
+      console.warn("Gagal cek duplikasi presensi di server:", checkErr);
+    }
+
+    // 4. Simpan riwayat absensi ke tabel Supabase 'riwayat_absen' (atau 'kehadiran')
     const timestampNow = new Date().toISOString();
     const payloadAbsen = {
       serial_number: cleanUid,
       nama_peserta: namaPengguna,
       peserta_id: pesertaId,
-      sesi_nama: sesi_nama || "Umum",
+      sesi_nama: targetSesiNama,
       jadwal: jenisJadwal,
       kategori: jenisJadwal,
       timestamp: timestampNow,

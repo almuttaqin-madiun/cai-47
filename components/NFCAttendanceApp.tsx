@@ -54,6 +54,7 @@ interface AttendanceRecord {
   menitTerlambat?: number;
   photoUrl?: string;
   name?: string;
+  sesiNama?: string;
 }
 
 // Role-to-Tabs Permissions Matrix
@@ -399,16 +400,30 @@ export default function NFCAttendanceApp() {
     }
   }, []);
 
-  // Load and listen to realtime records
+  // Load and listen to realtime records for current active session
   useEffect(() => {
     let isMounted = true;
+    const currentSesiNama = activeSession?.nama_sesi || "Umum";
 
     const fetchInitialRecords = async () => {
       try {
-        const [resRiwayat, resKehadiran] = await Promise.all([
-          supabase.from("riwayat_absen").select("*").order("timestamp", { ascending: false }).limit(100),
-          supabase.from("kehadiran").select("*").order("timestamp", { ascending: false }).limit(100),
-        ]);
+        let qRiwayat = supabase
+          .from("riwayat_absen")
+          .select("*")
+          .order("timestamp", { ascending: false })
+          .limit(100);
+        let qKehadiran = supabase
+          .from("kehadiran")
+          .select("*")
+          .order("timestamp", { ascending: false })
+          .limit(100);
+
+        if (activeSession?.nama_sesi) {
+          qRiwayat = qRiwayat.eq("sesi_nama", activeSession.nama_sesi);
+          qKehadiran = qKehadiran.eq("sesi_nama", activeSession.nama_sesi);
+        }
+
+        const [resRiwayat, resKehadiran] = await Promise.all([qRiwayat, qKehadiran]);
 
         const recordMap = new Map<string, AttendanceRecord>();
 
@@ -426,6 +441,9 @@ export default function NFCAttendanceApp() {
               status: "success",
               name: d.nama_peserta || d.nama || "Peserta NFC",
               photoUrl: photoUrlData?.data?.publicUrl,
+              sesiNama: d.sesi_nama,
+              statusKehadiran: d.status_kehadiran,
+              menitTerlambat: d.menit_terlambat,
             });
           }
         }
@@ -450,6 +468,9 @@ export default function NFCAttendanceApp() {
                 status: "success",
                 name: d.nama || "Peserta NFC",
                 photoUrl: photoUrlData?.data?.publicUrl,
+                sesiNama: d.sesi_nama,
+                statusKehadiran: d.status_kehadiran,
+                menitTerlambat: d.menit_terlambat,
               });
             }
           }
@@ -474,6 +495,10 @@ export default function NFCAttendanceApp() {
 
     // Helper for adding realtime record
     const handleNewRecord = (newRec: any, source: string) => {
+      if (activeSession?.nama_sesi && newRec.sesi_nama && newRec.sesi_nama !== activeSession.nama_sesi) {
+        return;
+      }
+
       const uidClean = hexToDecimal(String(newRec.serial_number || "").trim(), true);
       const timeVal = newRec.timestamp ? new Date(newRec.timestamp).getTime() : Date.now();
 
@@ -491,6 +516,9 @@ export default function NFCAttendanceApp() {
           status: "success",
           name: newRec.nama_peserta || newRec.nama || "Peserta NFC",
           photoUrl: photoUrlData?.data?.publicUrl,
+          sesiNama: newRec.sesi_nama,
+          statusKehadiran: newRec.status_kehadiran,
+          menitTerlambat: newRec.menit_terlambat,
         };
 
         return [added, ...prev];
@@ -499,7 +527,7 @@ export default function NFCAttendanceApp() {
 
     // Subscribe to realtime inserts on riwayat_absen
     const channel = supabase
-      .channel("public:riwayat_absen")
+      .channel(`public:riwayat_absen:${currentSesiNama}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "riwayat_absen" },
@@ -509,7 +537,7 @@ export default function NFCAttendanceApp() {
 
     // Subscribe to realtime inserts on kehadiran (fallback)
     const channelKehadiran = supabase
-      .channel("public:kehadiran")
+      .channel(`public:kehadiran:${currentSesiNama}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "kehadiran" },
@@ -523,7 +551,7 @@ export default function NFCAttendanceApp() {
       supabase.removeChannel(channel);
       supabase.removeChannel(channelKehadiran);
     };
-  }, []);
+  }, [activeSession?.nama_sesi]);
 
   const processAbsenRecord = useCallback(
     async (uid: string) => {
@@ -758,6 +786,76 @@ export default function NFCAttendanceApp() {
       let statusKehadiran = "Tepat Waktu";
       let menitTerlambat = 0;
       let batasJamTelat = "";
+      const sesiNamaNow = activeSession?.nama_sesi || "Umum";
+
+      // 4. Anti Dobel Absen (Satu nama / kartu dilarang absen 2x dalam sesi yang sama)
+      try {
+        const [checkRw, checkKeh] = await Promise.all([
+          supabase
+            .from("riwayat_absen")
+            .select("id, nama_peserta, serial_number")
+            .eq("sesi_nama", sesiNamaNow)
+            .or(`nama_peserta.ilike.${namaPengguna},serial_number.eq.${cleanUid}`)
+            .limit(1),
+          supabase
+            .from("kehadiran")
+            .select("id, nama, serial_number")
+            .eq("sesi_nama", sesiNamaNow)
+            .or(`nama.ilike.${namaPengguna},serial_number.eq.${cleanUid}`)
+            .limit(1),
+        ]);
+
+        const hasDuplicate =
+          (checkRw.data && checkRw.data.length > 0) ||
+          (checkKeh.data && checkKeh.data.length > 0) ||
+          records.some(
+            (r) =>
+              (r.name?.toLowerCase() === namaPengguna.toLowerCase() ||
+                r.serialNumber === cleanUid) &&
+              (r.sesiNama === sesiNamaNow || !r.sesiNama)
+          );
+
+        if (hasDuplicate) {
+          // Warning tone
+          try {
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = "sawtooth";
+            osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.3);
+          } catch (e) {}
+
+          if (navigator.vibrate) {
+            navigator.vibrate([150, 100, 150]);
+          }
+
+          setToastMsg({
+            type: "error",
+            text: `Peserta "${namaPengguna}" sudah presensi pada sesi ${sesiNamaNow}!`,
+          });
+
+          setDialogState({
+            isOpen: true,
+            type: "error",
+            title: "SUDAH PRESENSI",
+            message: `Peserta "${namaPengguna}" sudah melakukan presensi pada sesi "${sesiNamaNow}". Kartu tidak bisa absen 2x dalam sesi yang sama.`,
+            nama: namaPengguna,
+            serialNumber: cleanUid,
+          });
+
+          setTimeout(() => {
+            setToastMsg(null);
+          }, 4000);
+          return;
+        }
+      } catch (checkErr) {
+        console.warn("Gagal cek duplikasi presensi:", checkErr);
+      }
 
       if (activeSession) {
         const start = activeSession.jam_mulai ? activeSession.jam_mulai.slice(0, 5) : "08:00";
@@ -779,10 +877,9 @@ export default function NFCAttendanceApp() {
         }
       }
 
-      // 4. Save to database (Save to riwayat_absen & kehadiran)
+      // 5. Save to database (Save to riwayat_absen & kehadiran)
       try {
         const timestampNow = new Date().toISOString();
-        const sesiNamaNow = activeSession?.nama_sesi || "Umum";
 
         const { error: rErr } = await supabase.from("riwayat_absen").insert([
           {
@@ -870,6 +967,7 @@ export default function NFCAttendanceApp() {
         id: `${Date.now()}-${Math.random()}`,
         serialNumber: cleanUid,
         name: namaPengguna,
+        sesiNama: sesiNamaNow,
         timestamp: new Date(),
         status: "success",
         statusKehadiran: statusKehadiran,
@@ -880,17 +978,17 @@ export default function NFCAttendanceApp() {
 
       setToastMsg({
         type: "success",
-        text: `Presensi Berhasil! ${namaPengguna} (${statusKehadiran === "Terlambat" ? `Terlambat +${menitTerlambat}m` : "Tepat Waktu"})`,
+        text: `Presensi Berhasil! ${namaPengguna}`,
       });
 
       setDialogState({
         isOpen: true,
         type: "success",
-        title: "Success!",
-        message: `Presensi atas nama ${namaPengguna} berhasil dicatat pada Sesi ${activeSession?.nama_sesi || "Umum"}.`,
+        title: "SUKSES",
+        message: "",
         nama: namaPengguna,
         serialNumber: cleanUid,
-        sesiNama: activeSession?.nama_sesi || "Umum",
+        sesiNama: sesiNamaNow,
         statusKehadiran: statusKehadiran,
         menitTerlambat: menitTerlambat,
         photoUrl: photoUrl,
@@ -900,7 +998,7 @@ export default function NFCAttendanceApp() {
         setToastMsg(null);
       }, 4000);
     },
-    [activeSession]
+    [activeSession, records]
   );
 
   // Global background listener for USB NFC / Barcode reader (Keyboard Wedge)
@@ -1884,7 +1982,7 @@ export default function NFCAttendanceApp() {
                 <section className="flex-1 flex flex-col min-w-0">
                   <div className="flex justify-between items-end mb-2.5 shrink-0">
                     <div>
-                      <h2 className="text-lg font-bold text-slate-800">Daftar Kehadiran Hari Ini</h2>
+                      <h2 className="text-lg font-bold text-slate-800">Daftar Kehadiran Sesi Ini</h2>
                       <p className="text-xs text-slate-500 mt-0.5">Sesi: <strong>{activeSession?.nama_sesi || "Umum"}</strong></p>
                     </div>
                     <div className="flex gap-3">
@@ -1901,7 +1999,7 @@ export default function NFCAttendanceApp() {
                         <div className="bg-slate-50 p-3 rounded-full text-slate-400">
                           <Users size={28} />
                         </div>
-                        <p className="text-slate-500 text-xs">Belum ada riwayat absensi hari ini.</p>
+                        <p className="text-slate-500 text-xs">Belum ada riwayat absensi pada sesi ini.</p>
                       </div>
                     ) : (
                       <div className="overflow-y-auto max-h-[340px] sm:max-h-[420px]">

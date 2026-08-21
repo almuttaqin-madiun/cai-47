@@ -102,74 +102,45 @@ export default function SuccessDialog({
           )}
         </div>
 
-        {/* Message Content (Matching Reference Layout) */}
+        {/* Message Content */}
         <div className="space-y-2">
           {isSuccess ? (
-            <div>
-              <p className="text-sm sm:text-[15px] leading-relaxed text-[#166534]">
-                <strong className="font-black text-[#14532D] mr-1">Success!</strong>
-                {message || (
-                  <span>
-                    Presensi berhasil dicatat untuk{" "}
-                    <strong>{nama || "Peserta"}</strong>.
-                  </span>
-                )}
-              </p>
-            </div>
-          ) : (
-            <div>
-              <p className="text-sm sm:text-[15px] leading-relaxed text-[#9F1239]">
-                <strong className="font-black text-[#881337] mr-1">Error!</strong>
-                {message || "Kartu NFC tidak terdaftar. Silakan hubungi panitia."}
-              </p>
-            </div>
-          )}
-
-          {/* Participant Mini Details for Success Feedback */}
-          {isSuccess && (nama || sesiNama || statusKehadiran) && (
-            <div className="mt-3 pt-3 border-t border-emerald-300/50 flex flex-col gap-2">
+            <div className="flex flex-col items-center justify-center gap-1.5 py-1">
+              <span className="text-xs font-black uppercase tracking-widest text-[#15803d] bg-emerald-100/80 px-3 py-1 rounded-full border border-emerald-300/60 shadow-2xs">
+                SUKSES
+              </span>
+              <h3 className="text-xl sm:text-2xl font-black text-[#14532D] tracking-tight mt-1 leading-snug">
+                {nama || "Peserta"}
+              </h3>
               {photoUrl && (
-                <div className="flex justify-center">
-                  <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white shadow-sm relative">
-                    <Image
-                      src={photoUrl}
-                      alt={nama || "Peserta"}
-                      fill
-                      className="object-cover"
-                      unoptimized={true}
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
+                <div className="mt-2 w-16 h-16 rounded-full overflow-hidden border-2 border-white shadow-md relative">
+                  <Image
+                    src={photoUrl}
+                    alt={nama || "Peserta"}
+                    fill
+                    className="object-cover"
+                    unoptimized={true}
+                    referrerPolicy="no-referrer"
+                  />
                 </div>
               )}
-
-              <div className="flex flex-wrap items-center justify-center gap-1.5 text-xs font-semibold">
-                {sesiNama && (
-                  <span className="px-2.5 py-0.5 rounded-full bg-white/70 text-emerald-900 border border-emerald-200 shadow-2xs">
-                    Sesi: {sesiNama}
-                  </span>
-                )}
-                {statusKehadiran && (
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full font-bold border shadow-2xs ${
-                      statusKehadiran === "Terlambat"
-                        ? "bg-amber-100 text-amber-900 border-amber-300"
-                        : "bg-emerald-200/90 text-emerald-950 border-emerald-400/80"
-                    }`}
-                  >
-                    {statusKehadiran === "Terlambat"
-                      ? `Terlambat ${menitTerlambat && menitTerlambat > 0 ? `(+${menitTerlambat}m)` : ""}`
-                      : "Tepat Waktu"}
-                  </span>
-                )}
-              </div>
             </div>
-          )}
-
-          {/* NFC UID detail for error diagnosis */}
-          {!isSuccess && serialNumber && (
-            <div className="mt-2.5 text-[11px] font-mono text-rose-800/80 bg-rose-200/50 py-1 px-2.5 rounded-lg inline-block border border-rose-300/40">
-              UID: {serialNumber}
+          ) : (
+            <div className="py-1">
+              <span className="text-xs font-black uppercase tracking-widest text-[#b91c1c] bg-rose-100/80 px-3 py-1 rounded-full border border-rose-300/60 shadow-2xs inline-block mb-2">
+                {title || "PERINGATAN"}
+              </span>
+              <h3 className="text-base sm:text-lg font-bold text-[#881337] tracking-tight leading-snug">
+                {nama ? nama : ""}
+              </h3>
+              <p className="text-xs sm:text-sm leading-relaxed text-[#9F1239] mt-1 font-medium">
+                {message || "Kartu NFC tidak terdaftar. Silakan hubungi panitia."}
+              </p>
+              {serialNumber && (
+                <div className="mt-2.5 text-[11px] font-mono text-rose-800/90 bg-rose-200/60 py-1 px-2.5 rounded-lg inline-block border border-rose-300/50">
+                  UID: {serialNumber}
+                </div>
+              )}
             </div>
           )}
         </div>
