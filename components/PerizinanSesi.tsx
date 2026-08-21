@@ -642,6 +642,16 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
     return { total, sedangIzin, sudahKembali, avgDuration };
   }, [filteredRecords]);
 
+  // Lookup map for fast peserta metadata resolution
+  const mapPeserta = useMemo(() => {
+    const map = new Map<string, PesertaSimple>();
+    pesertaList.forEach((p) => {
+      if (p.id) map.set(String(p.id), p);
+      if (p.nama) map.set(p.nama.toLowerCase().trim(), p);
+    });
+    return map;
+  }, [pesertaList]);
+
   // Filtered Peserta inside Modal Picker
   const modalPesertaResults = useMemo(() => {
     if (!searchPesertaModal.trim()) {
@@ -657,10 +667,35 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
     });
   }, [pesertaList, searchPesertaModal]);
 
+  // Safe Date / Time Formatters
+  const formatTime = (timeStr?: string | null) => {
+    if (!timeStr) return "-";
+    try {
+      const d = new Date(timeStr);
+      if (isNaN(d.getTime())) return "-";
+      return d.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+    } catch {
+      return "-";
+    }
+  };
+
+  const formatDate = (timeStr?: string | null) => {
+    if (!timeStr) return "-";
+    try {
+      const d = new Date(timeStr);
+      if (isNaN(d.getTime())) return "-";
+      return d.toLocaleDateString("id-ID", { day: "numeric", month: "short" });
+    } catch {
+      return "-";
+    }
+  };
+
   // Helper format live stopwatch
   const formatLiveStopwatch = (startTimeIso: string) => {
+    if (!startTimeIso) return "00:00";
     try {
       const start = new Date(startTimeIso).getTime();
+      if (isNaN(start)) return "00:00";
       const now = currentTime.getTime();
       const diffSec = Math.max(0, Math.floor((now - start) / 1000));
       const hours = Math.floor(diffSec / 3600);
@@ -671,20 +706,21 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
         return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
       }
       return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-    } catch (e) {
+    } catch {
       return "00:00";
     }
   };
 
   // Helper check if elapsed time exceeds target duration
   const isOverTargetDuration = (startTimeIso: string, targetMins?: number) => {
-    if (!targetMins || targetMins <= 0) return false;
+    if (!targetMins || targetMins <= 0 || !startTimeIso) return false;
     try {
       const start = new Date(startTimeIso).getTime();
+      if (isNaN(start)) return false;
       const now = currentTime.getTime();
       const elapsedMin = Math.floor((now - start) / (1000 * 60));
       return elapsedMin >= targetMins;
-    } catch (e) {
+    } catch {
       return false;
     }
   };
@@ -1029,10 +1065,10 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
                       {/* Waktu Mulai */}
                       <td className="py-3 px-3.5">
                         <div className="font-mono text-slate-800 font-semibold text-xs">
-                          {new Date(item.waktu_mulai).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                          {formatTime(item.waktu_mulai)}
                         </div>
                         <div className="text-[10px] text-slate-400">
-                          {new Date(item.waktu_mulai).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}
+                          {formatDate(item.waktu_mulai)}
                         </div>
                       </td>
 
@@ -1041,7 +1077,7 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
                         {item.waktu_kembali ? (
                           <>
                             <div className="font-mono text-slate-800 font-semibold text-xs">
-                              {new Date(item.waktu_kembali).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                              {formatTime(item.waktu_kembali)}
                             </div>
                             <div className="text-[10px] text-slate-500 font-medium">
                               Selesai
@@ -1253,7 +1289,7 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
                       <div className="flex items-center justify-between text-slate-600">
                         <span className="text-[10px] uppercase font-bold text-slate-400">Keluar:</span>
                         <span className="font-mono font-medium text-slate-700">
-                          {new Date(item.waktu_mulai).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })} WIB
+                          {formatTime(item.waktu_mulai)} WIB
                         </span>
                       </div>
 
@@ -1261,7 +1297,7 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
                         <div className="flex items-center justify-between text-slate-600">
                           <span className="text-[10px] uppercase font-bold text-slate-400">Kembali:</span>
                           <span className="font-mono font-medium text-slate-800">
-                            {new Date(item.waktu_kembali).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })} WIB
+                            {formatTime(item.waktu_kembali)} WIB
                           </span>
                         </div>
                       ) : null}
@@ -1773,14 +1809,14 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
                 <div className="flex justify-between">
                   <span className="text-slate-500">Waktu Mulai:</span>
                   <span className="font-mono font-bold text-slate-800">
-                    {new Date(detailRecord.waktu_mulai).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })} WIB
+                    {formatTime(detailRecord.waktu_mulai)} WIB
                   </span>
                 </div>
                 {detailRecord.waktu_kembali && (
                   <div className="flex justify-between">
                     <span className="text-slate-500">Waktu Kembali:</span>
                     <span className="font-mono font-bold text-slate-800">
-                      {new Date(detailRecord.waktu_kembali).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })} WIB
+                      {formatTime(detailRecord.waktu_kembali)} WIB
                     </span>
                   </div>
                 )}

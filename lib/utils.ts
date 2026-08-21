@@ -30,27 +30,43 @@ export function toTitleCase(str: string | null | undefined): string {
 export function hexToDecimal(hexInput: string, reverseBytes: boolean = true): string {
   if (!hexInput) return "";
 
-  // 1. Bersihkan titik dua (:), strip (-), dan spasi dari string hex
-  const cleanHex = hexInput.replace(/[:\s-]/g, "").trim();
+  // 1. Bersihkan karakter kontrol (\r, \n, \t), titik dua (:), strip (-), dan spasi
+  const cleanInput = String(hexInput)
+    .replace(/[\r\n\t]/g, "")
+    .trim();
+  const cleanHex = cleanInput.replace(/[:\s-]/g, "");
+
+  if (!cleanHex) return "";
 
   // 2. Jika input sudah berupa string desimal murni, kembalikan langsung
-  if (/^\d+$/.test(cleanHex) && !hexInput.includes(":")) {
+  if (/^\d+$/.test(cleanHex)) {
     return cleanHex;
+  }
+
+  // 2b. Jika input berupa angka desimal dengan akhiran huruf (misal "2817250273M" dari scanner/keyboard)
+  const onlyDigits = cleanHex.replace(/\D/g, "");
+  if (onlyDigits && onlyDigits.length >= 6 && /^\d+[a-zA-Z]?$/.test(cleanHex)) {
+    return onlyDigits;
+  }
+
+  // 3. Pastikan hanya karakter heksadesimal valid (0-9, a-f, A-F) sebelum konversi BigInt
+  if (!/^[0-9a-fA-F]+$/.test(cleanHex)) {
+    // Jika ada karakter non-hex, kembalikan angka jika ada, atau kembalikan string bersih tanpa error
+    return onlyDigits || cleanInput;
   }
 
   try {
     let hexToConvert = cleanHex;
 
-    // 3. Balik byte order (Little Endian) jika panjang hex genap (pasangan 2 digit hex / 1 byte)
+    // 4. Balik byte order (Little Endian) jika panjang hex genap (pasangan 2 digit hex / 1 byte)
     if (reverseBytes && cleanHex.length % 2 === 0) {
       const bytes = cleanHex.match(/.{1,2}/g) || [];
       hexToConvert = bytes.reverse().join("");
     }
 
-    // 4. Konversi string Heksadesimal (0x...) ke Desimal menggunakan BigInt
-    return BigInt("0x" + hexToConvert).toString();
-  } catch (error) {
-    console.error("Gagal mengonversi Hex ke Desimal:", error);
+    // 5. Konversi string Heksadesimal (0x...) ke Desimal menggunakan BigInt
+    return BigInt("0x" + hexToConvert).toString(10);
+  } catch {
     return cleanHex;
   }
 }
@@ -62,7 +78,9 @@ export function hexToDecimal(hexInput: string, reverseBytes: boolean = true): st
  */
 export function getAllUidCandidates(input: string): string[] {
   if (!input) return [];
-  const clean = input.trim();
+  const clean = String(input)
+    .replace(/[\r\n\t]/g, "")
+    .trim();
   if (!clean) return [];
 
   const candidates = new Set<string>([clean]);
@@ -76,23 +94,33 @@ export function getAllUidCandidates(input: string): string[] {
     candidates.add(stripped.toUpperCase());
   }
 
+  // Tambahkan variasi digit jika ada karakter tambahan (misal "2817250273M" -> "2817250273")
+  const digitsOnly = stripped.replace(/\D/g, "");
+  if (digitsOnly && digitsOnly !== stripped) {
+    candidates.add(digitsOnly);
+    const unpaddedDigits = digitsOnly.replace(/^0+/, "");
+    if (unpaddedDigits) candidates.add(unpaddedDigits);
+    if (digitsOnly.length < 10) candidates.add(digitsOnly.padStart(10, "0"));
+  }
+
   // Variasi angka desimal murni & penanganan awalan nol (leading zeros)
-  if (/^\d+$/.test(stripped)) {
+  const numericTarget = /^\d+$/.test(stripped) ? stripped : /^\d+$/.test(digitsOnly) ? digitsOnly : null;
+  if (numericTarget) {
     // Tambahkan variasi tanpa awalan nol (unpadded)
-    const unpadded = stripped.replace(/^0+/, "");
+    const unpadded = numericTarget.replace(/^0+/, "");
     if (unpadded) {
       candidates.add(unpadded);
     }
     // Tambahkan variasi padding standar 10-digit dan 8-digit
-    if (stripped.length < 10) {
-      candidates.add(stripped.padStart(10, "0"));
+    if (numericTarget.length < 10) {
+      candidates.add(numericTarget.padStart(10, "0"));
     }
-    if (stripped.length < 8) {
-      candidates.add(stripped.padStart(8, "0"));
+    if (numericTarget.length < 8) {
+      candidates.add(numericTarget.padStart(8, "0"));
     }
 
     try {
-      const num = BigInt(stripped);
+      const num = BigInt(numericTarget);
       const numStr = num.toString(10);
       candidates.add(numStr);
       candidates.add(numStr.padStart(10, "0"));
@@ -116,7 +144,7 @@ export function getAllUidCandidates(input: string): string[] {
       // Format hex Little-Endian (dibalik per byte)
       const bytes = paddedHex.match(/.{1,2}/g) || [];
       const revHex = bytes.slice().reverse().join("");
-      if (revHex) {
+      if (revHex && /^[0-9a-fA-F]+$/.test(revHex)) {
         candidates.add(revHex.toLowerCase());
         candidates.add(revHex.toUpperCase());
         const colonRev = revHex.match(/.{1,2}/g)?.join(":") || "";
@@ -126,15 +154,15 @@ export function getAllUidCandidates(input: string): string[] {
         }
         // Desimal dari reversed hex
         try {
-          const revDec = BigInt("0x" + revHex).toString();
+          const revDec = BigInt("0x" + revHex).toString(10);
           candidates.add(revDec);
           candidates.add(revDec.padStart(10, "0"));
-        } catch (e) {}
+        } catch {}
       }
-    } catch (e) {}
+    } catch {}
   }
 
-  // Jika berupa string heksadesimal (misal "31:79:E8:A7" atau "3179e8a7" dari Android NFC)
+  // Jika berupa string heksadesimal murni (misal "31:79:E8:A7" atau "3179e8a7" dari Android NFC)
   if (/^[0-9a-fA-F]+$/.test(stripped)) {
     try {
       const padded = stripped.padStart(Math.ceil(stripped.length / 2) * 2, "0");
@@ -149,13 +177,15 @@ export function getAllUidCandidates(input: string): string[] {
       }
 
       // 1. Big-Endian Decimal (misal 0x3179E8A7 -> 830070951)
-      const decBig = BigInt("0x" + padded).toString(10);
-      candidates.add(decBig);
+      try {
+        const decBig = BigInt("0x" + padded).toString(10);
+        candidates.add(decBig);
+      } catch {}
 
       // 2. Little-Endian Decimal & Reversed Hex (misal 31 79 E8 A7 -> A7 E8 79 31 -> 2817030449)
       const bytes = padded.match(/.{1,2}/g) || [];
       const revHex = bytes.slice().reverse().join("");
-      if (revHex) {
+      if (revHex && /^[0-9a-fA-F]+$/.test(revHex)) {
         candidates.add(revHex.toLowerCase());
         candidates.add(revHex.toUpperCase());
         const colonRev = revHex.match(/.{1,2}/g)?.join(":") || "";
@@ -163,10 +193,12 @@ export function getAllUidCandidates(input: string): string[] {
           candidates.add(colonRev.toLowerCase());
           candidates.add(colonRev.toUpperCase());
         }
-        const decLittle = BigInt("0x" + revHex).toString(10);
-        candidates.add(decLittle);
+        try {
+          const decLittle = BigInt("0x" + revHex).toString(10);
+          candidates.add(decLittle);
+        } catch {}
       }
-    } catch (e) {}
+    } catch {}
   }
 
   return Array.from(candidates).filter(Boolean);
