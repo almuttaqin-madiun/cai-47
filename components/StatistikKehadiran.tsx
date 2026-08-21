@@ -1365,26 +1365,26 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* 1. Header & Quick Actions */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 p-4 sm:p-5 shadow-xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#203598] to-blue-700 text-white flex items-center justify-center shadow-md shadow-blue-900/10">
-              <PieChartIcon className="w-6 h-6" />
+            <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-br from-[#203598] to-blue-700 text-white flex items-center justify-center shadow-sm shrink-0">
+              <PieChartIcon className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight">
-                  Statistik Kehadiran Sesi
+                <h1 className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight">
+                  Grafik &amp; Statistik Presensi
                 </h1>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                   Live Sync
                 </span>
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Visualisasi grafik donat modern persentase peserta hadir vs belum hadir di setiap sesi
+              <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5">
+                Visualisasi grafik donat persentase kehadiran peserta per sesi kegiatan
               </p>
             </div>
           </div>
@@ -1393,34 +1393,34 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
             <button
               onClick={handleManualRefresh}
               disabled={refreshing}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors border border-slate-200/60 shadow-2xs cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors border border-slate-200/60 shadow-2xs cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin text-blue-600" : ""}`} />
-              <span>{refreshing ? "Memperbarui..." : "Refresh Data"}</span>
+              <span>{refreshing ? "Sinkron..." : "Refresh"}</span>
             </button>
 
             <button
               onClick={handleExportExcel}
               disabled={!currentSelectedStat}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-sm shadow-emerald-700/20 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-2xs cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Export Statistik (.xlsx)</span>
+              <span>Export Excel</span>
             </button>
           </div>
         </div>
 
         {/* Filters Bar */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mt-4 pt-4 border-t border-slate-100">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 mt-3.5 pt-3.5 border-t border-slate-100">
           {/* Kategori Sesi Filter */}
           <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
               Kategori Sesi
             </label>
             <select
               value={selectedKategori}
               onChange={(e) => setSelectedKategori(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#203598] focus:bg-white"
+              className="w-full px-3 py-2 bg-slate-50 hover:bg-slate-100/70 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#203598] focus:bg-white transition-colors cursor-pointer"
             >
               <option value="SEMUA">Semua Kategori (Materi, Makan, Sholat)</option>
               <option value="materi">Sesi Materi</option>
@@ -1431,13 +1431,13 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
 
           {/* Tanggal Sesi Filter */}
           <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
               Filter Tanggal
             </label>
             <select
               value={selectedTanggal}
               onChange={(e) => setSelectedTanggal(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#203598] focus:bg-white"
+              className="w-full px-3 py-2 bg-slate-50 hover:bg-slate-100/70 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#203598] focus:bg-white transition-colors cursor-pointer"
             >
               <option value="SEMUA">Semua Tanggal</option>
               {distinctDates.map((d) => (
@@ -1455,13 +1455,13 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
 
           {/* Sesi Dropdown Switcher */}
           <div className="sm:col-span-2">
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
               Pilih Sesi Fokus
             </label>
             <select
               value={selectedSessionKey}
               onChange={(e) => setSelectedSessionKey(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-[#203598] focus:outline-none focus:border-[#203598] focus:bg-white truncate"
+              className="w-full px-3 py-2 bg-blue-50/50 hover:bg-blue-50 border border-blue-200 rounded-xl text-xs font-bold text-[#203598] focus:outline-none focus:border-[#203598] focus:bg-white transition-colors truncate cursor-pointer"
             >
               {filteredSessionStats.length === 0 ? (
                 <option value="">Belum ada sesi tersedia</option>
