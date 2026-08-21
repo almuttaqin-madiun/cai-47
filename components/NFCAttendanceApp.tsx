@@ -26,10 +26,14 @@ import {
   HelpCircle,
   Radio,
   Sparkles,
-  Info
+  Info,
+  ExternalLink,
+  Copy,
+  Search,
+  RefreshCw,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { hexToDecimal, toTitleCase } from "@/lib/utils";
+import { getAllUidCandidates, hexToDecimal, toTitleCase } from "@/lib/utils";
 import InputPesertaForm from "./InputPesertaForm";
 import DataPesertaTable from "./DataPesertaTable";
 import InputNFCPesertaForm from "./InputNFCPesertaForm";
@@ -50,43 +54,6 @@ interface AttendanceRecord {
   menitTerlambat?: number;
   photoUrl?: string;
   name?: string;
-}
-
-function getUidCandidates(input: string): string[] {
-  const clean = input.trim();
-  const candidates = new Set<string>([clean]);
-
-  const stripped = clean.replace(/[:\s-]/g, "");
-  if (stripped) {
-    candidates.add(stripped);
-    candidates.add(stripped.toLowerCase());
-    candidates.add(stripped.toUpperCase());
-  }
-
-  if (/^\d+$/.test(stripped)) {
-    try {
-      const num = BigInt(stripped);
-      const hex = num.toString(16);
-      candidates.add(hex);
-      candidates.add(hex.toLowerCase());
-      candidates.add(hex.toUpperCase());
-
-      const hexColons = hex.padStart(hex.length + (hex.length % 2), "0").match(/.{1,2}/g)?.join(":") || "";
-      if (hexColons) {
-        candidates.add(hexColons.toLowerCase());
-        candidates.add(hexColons.toUpperCase());
-      }
-    } catch (e) {}
-  }
-
-  if (/^[0-9a-fA-F]+$/.test(stripped)) {
-    try {
-      const dec = BigInt("0x" + stripped).toString(10);
-      candidates.add(dec);
-    } catch (e) {}
-  }
-
-  return Array.from(candidates).filter(Boolean);
 }
 
 // Role-to-Tabs Permissions Matrix
@@ -174,7 +141,14 @@ export default function NFCAttendanceApp() {
 
   const [isScanning, setIsScanning] = useState(false);
   const [isSupported, setIsSupported] = useState<boolean | null>(null);
+  const [isInsideIframe, setIsInsideIframe] = useState(false);
   const [showAndroidGuideModal, setShowAndroidGuideModal] = useState(false);
+  const [showQuickManualModal, setShowQuickManualModal] = useState(false);
+  const [manualSearchQuery, setManualSearchQuery] = useState("");
+  const [allPesertaList, setAllPesertaList] = useState<any[]>([]);
+  const [loadingPesertaList, setLoadingPesertaList] = useState(false);
+  const [nfcTestResult, setNfcTestResult] = useState<{ uid: string; time: string; format: string } | null>(null);
+  const [isTestingNfc, setIsTestingNfc] = useState(false);
   const [usbModeActive, setUsbModeActive] = useState(true);
   const [usbInputVal, setUsbInputVal] = useState("");
   const [isUsbFocused, setIsUsbFocused] = useState(true);
@@ -322,12 +296,90 @@ export default function NFCAttendanceApp() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
+      setIsInsideIframe(window.self !== window.top);
       setIsSupported("NDEFReader" in window);
       checkActiveSession();
       const interval = setInterval(checkActiveSession, 10000);
       return () => clearInterval(interval);
     }
   }, [checkActiveSession]);
+
+  const fetchPesertaList = useCallback(async () => {
+    setLoadingPesertaList(true);
+    try {
+      const [resP, resNfc] = await Promise.all([
+        supabase.from("peserta").select("*").order("nama", { ascending: true }),
+        supabase.from("nfc_peserta").select("*"),
+      ]);
+
+      let list = resP.data || [];
+      const nfcMap = new Map<number, any>();
+      if (resNfc.data) {
+        for (const n of resNfc.data) {
+          if (n.peserta_id) {
+            nfcMap.set(n.peserta_id, n);
+          }
+        }
+      }
+
+      list = list.map((p: any) => {
+        const nRecord = nfcMap.get(p.id);
+        return {
+          ...p,
+          nfc_uid: nRecord?.nfc_uid || p.nfc_uid || p.serial_number || "",
+        };
+      });
+
+      setAllPesertaList(list);
+    } catch (e) {
+      console.warn("Gagal load daftar peserta:", e);
+    } finally {
+      setLoadingPesertaList(false);
+    }
+  }, []);
+
+  const handleStartNfcTest = useCallback(async () => {
+    if (typeof window === "undefined" || !("NDEFReader" in window)) {
+      setErrorMsg("Browser/Perangkat ini tidak mendukung Web NFC API.");
+      return;
+    }
+    try {
+      setIsTestingNfc(true);
+      // @ts-ignore
+      const ndef = new window.NDEFReader();
+      await ndef.scan();
+      ndef.addEventListener("reading", (event: any) => {
+        let raw = event.serialNumber || "";
+        if (!raw && event.message?.records) {
+          for (const r of event.message.records) {
+            if (r.data) {
+              try {
+                const dec = new TextDecoder(r.encoding || "utf-8").decode(r.data).trim();
+                if (dec) {
+                  raw = dec;
+                  break;
+                }
+              } catch (err) {}
+            }
+          }
+        }
+        if (raw) {
+          const decVal = hexToDecimal(raw, true);
+          setNfcTestResult({
+            uid: raw,
+            time: new Date().toLocaleTimeString("id-ID"),
+            format: `Dec: ${decVal} | Hex: ${raw}`,
+          });
+          if (typeof navigator !== "undefined" && navigator.vibrate) {
+            navigator.vibrate([100, 50, 100]);
+          }
+        }
+      });
+    } catch (err: any) {
+      setIsTestingNfc(false);
+      setErrorMsg(`Gagal uji sensor NFC: ${err.message || err}`);
+    }
+  }, []);
 
   // Load and listen to realtime records
   useEffect(() => {
@@ -458,8 +510,9 @@ export default function NFCAttendanceApp() {
   const processAbsenRecord = useCallback(
     async (uid: string) => {
       if (!uid || !uid.trim()) return;
+      const cleanInput = uid.trim();
       // Standarisasi: Pastikan UID diubah ke desimal jika berupa format hex (misal 31:79:E8:A7)
-      const cleanUid = hexToDecimal(uid.trim(), true);
+      const cleanUid = hexToDecimal(cleanInput, true) || cleanInput;
 
       // Sound feedback
       try {
@@ -482,7 +535,10 @@ export default function NFCAttendanceApp() {
       // 1. Lookup participant name and photo from Supabase & Local Storage
       let namaPengguna = "";
       let photoUrlFound = "";
-      const uidCandidates = getUidCandidates(cleanUid);
+      const uidCandidates = getAllUidCandidates(cleanInput);
+      if (cleanUid && !uidCandidates.includes(cleanUid)) {
+        uidCandidates.push(cleanUid);
+      }
 
       try {
         // Search nfc_peserta table by nfc_uid candidates
@@ -594,15 +650,18 @@ export default function NFCAttendanceApp() {
           const localPesertaStr = localStorage.getItem("cai_peserta");
           if (localPesertaStr) {
             const localPeserta = JSON.parse(localPesertaStr);
-            const found = localPeserta.find(
-              (p: any) =>
-                p.nfc_uid === cleanUid ||
-                p.serial_number === cleanUid ||
-                p.nfc_uid === cleanUid.toLowerCase() ||
-                p.nfc_uid === cleanUid.toUpperCase()
-            );
+            const found = localPeserta.find((p: any) => {
+              const u1 = String(p.nfc_uid || "").trim();
+              const u2 = String(p.serial_number || "").trim();
+              return uidCandidates.some(
+                (c) =>
+                  c.toLowerCase() === u1.toLowerCase() ||
+                  c.toLowerCase() === u2.toLowerCase()
+              );
+            });
             if (found) {
               namaPengguna = found.nama || found.nama_peserta || "";
+              photoUrlFound = found.foto || found.foto_url || "";
             }
           }
         } catch (e) {}
@@ -637,7 +696,7 @@ export default function NFCAttendanceApp() {
           isOpen: true,
           type: "error",
           title: "Error!",
-          message: `Kartu NFC dengan UID (${cleanUid}) belum terdaftar di database peserta. Silakan hubungi panitia.`,
+          message: `Kartu NFC dengan UID (${cleanUid} / Raw: ${cleanInput}) belum terdaftar di database peserta. Silakan tautkan kartu di menu 'Input Kartu NFC' atau hubungi panitia.`,
           serialNumber: cleanUid,
         });
 
@@ -892,6 +951,14 @@ export default function NFCAttendanceApp() {
   const handleScan = useCallback(async () => {
     if (typeof window === "undefined") return;
 
+    if (window.self !== window.top) {
+      // In iframe preview
+      setToastMsg({
+        type: "error",
+        text: "Peringatan: Web NFC memerlukan tab browser mandiri. Buka di Tab Baru Chrome jika sensor belum merespons.",
+      });
+    }
+
     if (!("NDEFReader" in window)) {
       setShowAndroidGuideModal(true);
       setErrorMsg("Fitur Web NFC Android memerlukan Google Chrome di HP Android dengan sensor NFC aktif.");
@@ -909,14 +976,27 @@ export default function NFCAttendanceApp() {
         text: "Sensor NFC Android AKTIF! Tempelkan kartu ke bagian belakang HP Anda.",
       });
 
-      ndef.addEventListener("reading", async ({ serialNumber }: any) => {
-        const rawUid = serialNumber || "Tidak diketahui";
+      ndef.addEventListener("reading", async (event: any) => {
+        let rawUid = event.serialNumber || "";
+        if (!rawUid && event.message?.records) {
+          for (const record of event.message.records) {
+            if (record.data) {
+              try {
+                const textDecoder = new TextDecoder(record.encoding || "utf-8");
+                const decoded = textDecoder.decode(record.data).trim();
+                if (decoded) {
+                  rawUid = decoded;
+                  break;
+                }
+              } catch (e) {}
+            }
+          }
+        }
+        rawUid = rawUid || "Tidak diketahui";
         if (typeof navigator !== "undefined" && navigator.vibrate) {
           navigator.vibrate([120, 60, 120]);
         }
-        // Standarisasi: Konversi hex Android (contoh "31:79:E8:A7") ke desimal murni ("2817030449")
-        const decimalUid = hexToDecimal(rawUid, true);
-        await processAbsenRecord(decimalUid);
+        await processAbsenRecord(rawUid);
       });
 
       ndef.addEventListener("readingerror", () => {
@@ -928,7 +1008,8 @@ export default function NFCAttendanceApp() {
     } catch (error: any) {
       setIsScanning(false);
       if (error.name === "NotAllowedError") {
-        setErrorMsg("Izin akses NFC ditolak atau belum diizinkan. Silakan izinkan akses NFC di Chrome.");
+        setErrorMsg("Izin akses NFC ditolak atau dibatasi frame. Silakan buka website di Tab Baru Chrome dan izinkan akses NFC.");
+        setShowAndroidGuideModal(true);
       } else if (error.name === "NotSupportedError") {
         setErrorMsg("Browser atau HP Android Anda belum mendukung Web NFC.");
         setShowAndroidGuideModal(true);
@@ -1661,6 +1742,26 @@ export default function NFCAttendanceApp() {
 
                       {/* Prominent Android Web NFC Scan Buttons */}
                       <div className="w-full space-y-2 mb-2">
+                        {isInsideIframe && (
+                          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex flex-col gap-1.5 text-left">
+                            <div className="flex items-center gap-1.5 font-bold text-amber-800">
+                              <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+                              <span>Buka di Tab Baru untuk NFC HP</span>
+                            </div>
+                            <p className="text-[10px] text-amber-700 leading-tight">
+                              Browser membatasi sensor NFC jika dibuka di dalam frame/preview.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => window.open(window.location.href, "_blank")}
+                              className="w-full py-1.5 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white rounded-lg font-bold text-[11px] flex items-center justify-center gap-1 shadow-xs cursor-pointer"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Buka di Tab Baru Chrome</span>
+                            </button>
+                          </div>
+                        )}
+
                         {!isScanning ? (
                           <button
                             id="btn-mulai-tap-android"
@@ -1702,17 +1803,32 @@ export default function NFCAttendanceApp() {
                           </div>
                         )}
 
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setShowAndroidGuideModal(true);
-                          }}
-                          className="w-full text-slate-500 hover:text-[#203598] py-1 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                        >
-                          <HelpCircle className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                          <span>Panduan / Cara Tap di HP Android</span>
-                        </button>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowAndroidGuideModal(true);
+                            }}
+                            className="w-full text-slate-600 bg-slate-100 hover:bg-slate-200 py-1.5 px-2 rounded-lg text-[10.5px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <HelpCircle className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                            <span>Bantuan NFC HP</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              fetchPesertaList();
+                              setShowQuickManualModal(true);
+                            }}
+                            className="w-full text-emerald-700 bg-emerald-50 hover:bg-emerald-100 py-1.5 px-2 rounded-lg text-[10.5px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer border border-emerald-200"
+                          >
+                            <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span>Presensi Manual</span>
+                          </button>
+                        </div>
                       </div>
 
                       {usbInputVal && (
@@ -1886,7 +2002,7 @@ export default function NFCAttendanceApp() {
         onLoginSuccess={handleLoginSuccess}
       />
 
-      {/* Android Web NFC Guide Modal */}
+      {/* Android Web NFC Guide & Diagnostics Modal */}
       {showAndroidGuideModal && (
         <div
           id="modal-android-nfc-guide"
@@ -1894,7 +2010,7 @@ export default function NFCAttendanceApp() {
           onClick={() => setShowAndroidGuideModal(false)}
         >
           <div
-            className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-slate-200 relative overflow-hidden"
+            className="bg-white rounded-2xl max-w-xl w-full p-5 sm:p-6 shadow-2xl border border-slate-200 relative overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
@@ -1905,10 +2021,10 @@ export default function NFCAttendanceApp() {
                 </div>
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-slate-900 leading-snug">
-                    Cara Tap Kartu NFC di HP Android
+                    Diagnostik &amp; Panduan NFC Android
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Petunjuk penggunaan fitur Web NFC di perangkat Android
+                    Solusi membaca kartu NFC langsung dari HP Android
                   </p>
                 </div>
               </div>
@@ -1921,55 +2037,138 @@ export default function NFCAttendanceApp() {
               </button>
             </div>
 
-            {/* Steps Content */}
-            <div className="py-4 space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
-                  1
-                </div>
-                <div className="text-xs text-slate-700 space-y-1">
-                  <strong className="text-slate-900 block font-bold">Aktifkan Sensor NFC di HP Android</strong>
-                  <span>Buka <strong>Pengaturan (Settings)</strong> &gt; <strong>Koneksi / Perangkat Terhubung</strong> &gt; pastikan <strong>NFC</strong> dalam posisi <strong>AKTIF (ON)</strong>.</span>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
-                  2
-                </div>
-                <div className="text-xs text-slate-700 space-y-1">
-                  <strong className="text-slate-900 block font-bold">Gunakan Browser Google Chrome</strong>
-                  <span>Buka tautan website presensi ini melalui aplikasi <strong>Google Chrome</strong> di Android (bukan in-app browser seperti WhatsApp/Instagram).</span>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
-                  3
-                </div>
-                <div className="text-xs text-slate-700 space-y-1">
-                  <strong className="text-slate-900 block font-bold">Tekan &quot;Mulai Tap di Android&quot; &amp; Beri Izin</strong>
-                  <span>Klik tombol biru <strong>&quot;Mulai Tap di Android&quot;</strong>, lalu tekan <strong>&quot;Izinkan&quot; (Allow)</strong> saat Chrome meminta izin sensor NFC.</span>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
-                  4
-                </div>
-                <div className="text-xs text-slate-700 space-y-1">
-                  <strong className="text-slate-900 block font-bold">Dekatkan Kartu ke Bagian Belakang HP</strong>
-                  <span>Tempelkan kartu peserta ke bagian punggung/belakang HP Android (biasanya dekat kamera). HP akan bergetar dan data kehadiran langsung masuk secara otomatis!</span>
-                </div>
-              </div>
-
-              <div className="p-3 bg-blue-50/80 rounded-xl border border-blue-200 text-xs text-blue-900 flex items-start gap-2.5">
-                <Usb className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
-                <div>
-                  <strong>Penggunaan USB NFC Reader di Laptop/PC:</strong>
-                  <p className="mt-0.5 text-blue-800 text-[11px]">
-                    Jika menggunakan laptop dengan modul USB Reader, sistem langsung aktif otomatis tanpa perlu menekan tombol ini.
+            {/* Steps & Diagnostic Content */}
+            <div className="py-4 space-y-3.5 max-h-[65vh] overflow-y-auto pr-1">
+              {/* Standalone / Iframe Status Notice */}
+              <div className="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50 border-slate-200">
+                <div className="text-xs space-y-0.5">
+                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <Radio className="w-3.5 h-3.5 text-[#203598]" />
+                    <span>Mode Browser &amp; Tab Mandiri</span>
+                  </div>
+                  <p className="text-slate-500 text-[11px]">
+                    {isInsideIframe
+                      ? "Terdeteksi dalam Frame. Disarankan buka di Tab Baru Chrome agar sensor NFC tidak diblokir."
+                      : "Berjalan di Tab Utama Browser (Siap Akses Sensor NFC)."}
                   </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (typeof navigator !== "undefined" && navigator.clipboard) {
+                        navigator.clipboard.writeText(window.location.href);
+                        setToastMsg({ type: "success", text: "Link web presensi disalin ke clipboard!" });
+                      }
+                    }}
+                    className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-lg border border-slate-200 flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Salin Link</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.open(window.location.href, "_blank")}
+                    className="px-3 py-1.5 bg-[#203598] hover:bg-[#182a7a] text-white text-xs font-bold rounded-lg flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Buka di Tab Baru</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Interactive Live NFC Tester */}
+              <div className="p-3.5 bg-blue-50/60 rounded-xl border border-blue-200/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-600 animate-ping" />
+                    <strong className="text-xs text-blue-950 font-bold">Uji Coba Sensor NFC HP</strong>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleStartNfcTest}
+                    className={`px-3 py-1 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
+                      isTestingNfc
+                        ? "bg-emerald-600 text-white animate-pulse"
+                        : "bg-blue-600 hover:bg-blue-700 text-white shadow-xs"
+                    }`}
+                  >
+                    {isTestingNfc ? "● Sensor Aktif (Tempelkan Kartu)" : "Mulai Tes Sensor"}
+                  </button>
+                </div>
+                <p className="text-[11px] text-blue-800 leading-relaxed">
+                  Tekan &quot;Mulai Tes Sensor&quot; lalu tempelkan kartu di belakang HP untuk memastikan browser dan perangkat dapat membaca chip kartu.
+                </p>
+                {nfcTestResult && (
+                  <div className="p-2.5 bg-white rounded-lg border border-emerald-300 text-xs space-y-1">
+                    <div className="text-emerald-700 font-bold flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Kartu Berhasil Terbaca! (Jam: {nfcTestResult.time})</span>
+                    </div>
+                    <div className="font-mono text-[11px] bg-slate-900 text-emerald-400 p-1.5 rounded truncate">
+                      {nfcTestResult.format}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Antenna Location Guide per Brand */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-2">
+                <strong className="text-slate-900 block font-bold">
+                  📍 Posisi Antena Sensor NFC di Berbagai Merek HP:
+                </strong>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-700">
+                  <div className="p-2 bg-white rounded-lg border border-slate-100">
+                    <span className="font-bold text-slate-900">Samsung:</span> Bagian tengah punggung HP (center).
+                  </div>
+                  <div className="p-2 bg-white rounded-lg border border-slate-100">
+                    <span className="font-bold text-slate-900">Xiaomi / Poco / Redmi:</span> Bagian atas dekat modul kamera.
+                  </div>
+                  <div className="p-2 bg-white rounded-lg border border-slate-100">
+                    <span className="font-bold text-slate-900">Oppo / Vivo / Realme:</span> Bagian atas / samping kamera belakang.
+                  </div>
+                  <div className="p-2 bg-white rounded-lg border border-slate-100">
+                    <span className="font-bold text-slate-900">Pixel / Infinix:</span> Bagian atas punggung HP.
+                  </div>
+                </div>
+              </div>
+
+              {/* 4 Steps Guide */}
+              <div className="space-y-2">
+                <div className="flex items-start gap-2.5 p-2.5 bg-white rounded-xl border border-slate-100">
+                  <div className="w-5 h-5 rounded-full bg-[#203598] text-white text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                    1
+                  </div>
+                  <div className="text-xs text-slate-700">
+                    <strong className="text-slate-900">Aktifkan NFC di Pengaturan:</strong> Buka Pengaturan HP &gt; Koneksi &gt; NFC dalam status <strong>ON</strong>.
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2.5 p-2.5 bg-white rounded-xl border border-slate-100">
+                  <div className="w-5 h-5 rounded-full bg-[#203598] text-white text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                    2
+                  </div>
+                  <div className="text-xs text-slate-700">
+                    <strong className="text-slate-900">Gunakan Google Chrome Asli:</strong> Hindari browser in-app (seperti dari link WhatsApp). Buka via Google Chrome.
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2.5 p-2.5 bg-white rounded-xl border border-slate-100">
+                  <div className="w-5 h-5 rounded-full bg-[#203598] text-white text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                    3
+                  </div>
+                  <div className="text-xs text-slate-700">
+                    <strong className="text-slate-900">Tekan &quot;Mulai Tap di Android&quot;:</strong> Klik tombol biru dan pilih <strong>&quot;Izinkan&quot; (Allow)</strong> saat Chrome meminta izin NFC.
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2.5 p-2.5 bg-white rounded-xl border border-slate-100">
+                  <div className="w-5 h-5 rounded-full bg-[#203598] text-white text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                    4
+                  </div>
+                  <div className="text-xs text-slate-700">
+                    <strong className="text-slate-900">Lepas Casing Logam/Tebal:</strong> Jika kartu tidak merespons, lepas casing pelindung tebal agar sinyal tidak terhalang.
+                  </div>
                 </div>
               </div>
             </div>
@@ -1992,7 +2191,132 @@ export default function NFCAttendanceApp() {
                 className="px-5 py-2.5 text-xs font-bold text-white bg-[#203598] hover:bg-[#182a7a] rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer"
               >
                 <Smartphone className="w-4 h-4 text-emerald-300" />
-                <span>Mulai Scan Sekarang</span>
+                <span>Mulai Scan Presensi</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Manual Attendance Modal (Fallback for damaged cards / Non-NFC) */}
+      {showQuickManualModal && (
+        <div
+          id="modal-quick-manual-attendance"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in"
+          onClick={() => setShowQuickManualModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-slate-200 relative overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+                  <UserCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-slate-900 leading-snug">
+                    Presensi Manual (Cari Nama)
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Hadirkan peserta secara instan jika kartu NFC rusak atau tertinggal
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowQuickManualModal(false)}
+                className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Search Input */}
+            <div className="py-3">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Ketik nama peserta atau kelompok..."
+                  value={manualSearchQuery}
+                  onChange={(e) => setManualSearchQuery(e.target.value)}
+                  autoFocus
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#203598]/20 focus:border-[#203598]"
+                />
+              </div>
+            </div>
+
+            {/* Participant Results List */}
+            <div className="space-y-1.5 max-h-[50vh] overflow-y-auto pr-1">
+              {loadingPesertaList ? (
+                <div className="py-8 text-center text-xs text-slate-400">
+                  <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-slate-300" />
+                  Memuat data peserta...
+                </div>
+              ) : (
+                (() => {
+                  const filtered = allPesertaList.filter((p) => {
+                    if (!manualSearchQuery.trim()) return true;
+                    const q = manualSearchQuery.toLowerCase();
+                    const n = String(p.nama || p.nama_peserta || "").toLowerCase();
+                    const k = String(p.kelompok || "").toLowerCase();
+                    const d = String(p.dapukan || "").toLowerCase();
+                    return n.includes(q) || k.includes(q) || d.includes(q);
+                  });
+
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="py-8 text-center text-xs text-slate-400">
+                        Tidak ada peserta yang cocok dengan &quot;{manualSearchQuery}&quot;
+                      </div>
+                    );
+                  }
+
+                  return filtered.slice(0, 50).map((p) => {
+                    const identifier = p.nfc_uid || p.serial_number || String(p.id);
+                    return (
+                      <div
+                        key={p.id}
+                        className="p-2.5 rounded-xl border border-slate-100 hover:border-blue-200 bg-slate-50/50 hover:bg-blue-50/30 flex items-center justify-between gap-3 transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-bold text-xs text-slate-900 truncate">
+                            {p.nama || p.nama_peserta}
+                          </div>
+                          <div className="text-[10.5px] text-slate-500 flex items-center gap-2">
+                            <span>Kelompok: {p.kelompok || "-"}</span>
+                            <span>&bull;</span>
+                            <span>Dapukan: {p.dapukan || "-"}</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setShowQuickManualModal(false);
+                            await processAbsenRecord(identifier);
+                          }}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg font-bold text-xs shrink-0 flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Hadirkan</span>
+                        </button>
+                      </div>
+                    );
+                  });
+                })()
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setShowQuickManualModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Tutup
               </button>
             </div>
           </div>

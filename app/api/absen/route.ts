@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getAllUidCandidates } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -11,43 +12,6 @@ const supabaseKey =
   "sb_publishable_cTSP_1BUjITwKFn507y9WA_9aI7Mly4";
 
 const supabase = createClient(supabaseUrl, supabaseKey);
-
-function getUidCandidates(input: string): string[] {
-  const clean = input.trim();
-  const candidates = new Set<string>([clean]);
-
-  const stripped = clean.replace(/[:\s-]/g, "");
-  if (stripped) {
-    candidates.add(stripped);
-    candidates.add(stripped.toLowerCase());
-    candidates.add(stripped.toUpperCase());
-  }
-
-  if (/^\d+$/.test(stripped)) {
-    try {
-      const num = BigInt(stripped);
-      const hex = num.toString(16);
-      candidates.add(hex);
-      candidates.add(hex.toLowerCase());
-      candidates.add(hex.toUpperCase());
-
-      const hexColons = hex.padStart(hex.length + (hex.length % 2), "0").match(/.{1,2}/g)?.join(":") || "";
-      if (hexColons) {
-        candidates.add(hexColons.toLowerCase());
-        candidates.add(hexColons.toUpperCase());
-      }
-    } catch (e) {}
-  }
-
-  if (/^[0-9a-fA-F]+$/.test(stripped)) {
-    try {
-      const dec = BigInt("0x" + stripped).toString(10);
-      candidates.add(dec);
-    } catch (e) {}
-  }
-
-  return Array.from(candidates).filter(Boolean);
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -62,7 +26,7 @@ export async function POST(req: NextRequest) {
     }
 
     const cleanUid = serial_number.trim();
-    const uidCandidates = getUidCandidates(cleanUid);
+    const uidCandidates = getAllUidCandidates(cleanUid);
 
     // 1. Cari data peserta di Supabase tabel 'nfc_peserta'
     let namaPengguna = "";

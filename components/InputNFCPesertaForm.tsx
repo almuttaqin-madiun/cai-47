@@ -111,42 +111,64 @@ export default function InputNFCPesertaForm() {
       setIsScanning(true);
       setMessage({
         type: "info",
-        text: "Silakan tempelkan kartu NFC ke area sensor perangkat...",
+        text: "Sensor NFC Android aktif! Silakan tempelkan kartu NFC ke bagian belakang HP Anda...",
       });
 
       // @ts-ignore
-      const ndef = new NDEFReader();
+      const ndef = new window.NDEFReader();
       await ndef.scan();
 
-      ndef.addEventListener("reading", ({ serialNumber }: any) => {
-        if (serialNumber) {
-          const formattedUID = hexToDecimal(serialNumber, true);
+      ndef.addEventListener("reading", (event: any) => {
+        let rawUid = event.serialNumber || "";
+        if (!rawUid && event.message?.records) {
+          for (const record of event.message.records) {
+            if (record.data) {
+              try {
+                const textDecoder = new TextDecoder(record.encoding || "utf-8");
+                const decoded = textDecoder.decode(record.data).trim();
+                if (decoded) {
+                  rawUid = decoded;
+                  break;
+                }
+              } catch (e) {}
+            }
+          }
+        }
+
+        if (rawUid) {
+          const formattedUID = hexToDecimal(rawUid, true);
           setScannedUID(formattedUID);
           setIsScanning(false);
           setMessage({
             type: "success",
-            text: `Kartu NFC terdeteksi! UID: ${formattedUID}`,
+            text: `Kartu NFC terdeteksi! UID: ${formattedUID} (Raw: ${rawUid})`,
           });
 
-          if (navigator.vibrate) {
+          if (typeof navigator !== "undefined" && navigator.vibrate) {
             navigator.vibrate(200);
           }
         }
       });
 
       ndef.addEventListener("readingerror", () => {
-        setIsScanning(false);
         setMessage({
           type: "error",
-          text: "Gagal membaca kartu NFC. Silakan coba lagi.",
+          text: "Gagal membaca tag NFC. Pastikan kartu menempel erat di belakang HP dekat kamera.",
         });
       });
     } catch (error: any) {
       setIsScanning(false);
-      setMessage({
-        type: "error",
-        text: `Gagal mengaktifkan sensor NFC: ${error.message || error}`,
-      });
+      if (error.name === "NotAllowedError") {
+        setMessage({
+          type: "error",
+          text: "Izin sensor NFC ditolak. Buka website di tab baru Google Chrome dan izinkan akses NFC.",
+        });
+      } else {
+        setMessage({
+          type: "error",
+          text: `Gagal mengaktifkan sensor NFC: ${error.message || error}`,
+        });
+      }
     }
   }, []);
 
