@@ -1044,36 +1044,54 @@ export default function NFCAttendanceApp() {
       const timestampNow = new Date().toISOString();
       (async () => {
         try {
-          await Promise.allSettled([
-            supabase.from("riwayat_absen").insert([
-              {
-                serial_number: cleanUid,
-                nama_peserta: namaPengguna,
-                sesi_nama: sesiNamaNow,
-                jadwal: currentJadwal,
-                kategori: currentJadwal,
-                status: statusKehadiran === "Terlambat" ? "Terlambat" : "Hadir",
-                status_kehadiran: statusKehadiran,
-                menit_terlambat: menitTerlambat,
-                waktu_telat: batasJamTelat,
-                timestamp: timestampNow,
-              },
-            ]),
-            supabase.from("kehadiran").insert([
-              {
-                serial_number: cleanUid,
-                nama: namaPengguna,
-                timestamp: timestampNow,
-                sesi_nama: sesiNamaNow,
-                jadwal: currentJadwal,
-                kategori: currentJadwal,
-                status: statusKehadiran === "Terlambat" ? "Terlambat" : "Hadir",
-                status_kehadiran: statusKehadiran,
-                menit_terlambat: menitTerlambat,
-                waktu_telat: batasJamTelat,
-              },
-            ]),
-          ]);
+          const payloadRiwayat: any = {
+            serial_number: cleanUid,
+            nama_peserta: namaPengguna,
+            sesi_nama: sesiNamaNow,
+            jadwal: currentJadwal,
+            kategori: currentJadwal,
+            status: statusKehadiran === "Terlambat" ? "Terlambat" : "Hadir",
+            status_kehadiran: statusKehadiran,
+            menit_terlambat: menitTerlambat,
+            waktu_telat: batasJamTelat,
+            timestamp: timestampNow,
+          };
+
+          const payloadKehadiran: any = {
+            serial_number: cleanUid,
+            nama: namaPengguna,
+            timestamp: timestampNow,
+            sesi_nama: sesiNamaNow,
+            jadwal: currentJadwal,
+            kategori: currentJadwal,
+            status: statusKehadiran === "Terlambat" ? "Terlambat" : "Hadir",
+            status_kehadiran: statusKehadiran,
+            menit_terlambat: menitTerlambat,
+            waktu_telat: batasJamTelat,
+          };
+
+          // 1. Try insert to riwayat_absen
+          const resRw = await supabase.from("riwayat_absen").insert([payloadRiwayat]);
+          if (resRw.error && (resRw.error.code === '42703' || resRw.error.message.includes('Could not find') || resRw.error.message.includes('not exist'))) {
+            delete payloadRiwayat.status_kehadiran;
+            delete payloadRiwayat.menit_terlambat;
+            delete payloadRiwayat.waktu_telat;
+            await supabase.from("riwayat_absen").insert([payloadRiwayat]);
+          }
+
+          // 2. Try insert to kehadiran
+          const resKeh = await supabase.from("kehadiran").insert([payloadKehadiran]);
+          if (resKeh.error && (resKeh.error.code === '42703' || resKeh.error.message.includes('Could not find') || resKeh.error.message.includes('not exist'))) {
+            delete payloadKehadiran.status_kehadiran;
+            delete payloadKehadiran.menit_terlambat;
+            delete payloadKehadiran.waktu_telat;
+            const fallbackKehRes = await supabase.from("kehadiran").insert([payloadKehadiran]);
+            if (fallbackKehRes.error && (fallbackKehRes.error.code === '42703' || fallbackKehRes.error.message.includes('Could not find'))) {
+               delete payloadKehadiran.status; // some older schema might not have status here
+               await supabase.from("kehadiran").insert([payloadKehadiran]);
+            }
+          }
+
         } catch (dbErr) {
           console.warn("Background DB sync error:", dbErr);
         }
