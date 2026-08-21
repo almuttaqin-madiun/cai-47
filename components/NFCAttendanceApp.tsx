@@ -21,7 +21,12 @@ import {
   Clock,
   LogOut,
   ShieldCheck,
-  UserCheck
+  UserCheck,
+  Smartphone,
+  HelpCircle,
+  Radio,
+  Sparkles,
+  Info
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { hexToDecimal, toTitleCase } from "@/lib/utils";
@@ -169,6 +174,7 @@ export default function NFCAttendanceApp() {
 
   const [isScanning, setIsScanning] = useState(false);
   const [isSupported, setIsSupported] = useState<boolean | null>(null);
+  const [showAndroidGuideModal, setShowAndroidGuideModal] = useState(false);
   const [usbModeActive, setUsbModeActive] = useState(true);
   const [usbInputVal, setUsbInputVal] = useState("");
   const [isUsbFocused, setIsUsbFocused] = useState(true);
@@ -884,8 +890,11 @@ export default function NFCAttendanceApp() {
   };
 
   const handleScan = useCallback(async () => {
+    if (typeof window === "undefined") return;
+
     if (!("NDEFReader" in window)) {
-      setErrorMsg("Browser ini tidak mendukung Web NFC. Namun Anda tetap dapat menggunakan USB NFC Reader.");
+      setShowAndroidGuideModal(true);
+      setErrorMsg("Fitur Web NFC Android memerlukan Google Chrome di HP Android dengan sensor NFC aktif.");
       return;
     }
 
@@ -895,25 +904,47 @@ export default function NFCAttendanceApp() {
       await ndef.scan();
       setIsScanning(true);
       setErrorMsg(null);
+      setToastMsg({
+        type: "success",
+        text: "Sensor NFC Android AKTIF! Tempelkan kartu ke bagian belakang HP Anda.",
+      });
 
       ndef.addEventListener("reading", async ({ serialNumber }: any) => {
         const rawUid = serialNumber || "Tidak diketahui";
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+          navigator.vibrate([120, 60, 120]);
+        }
         // Standarisasi: Konversi hex Android (contoh "31:79:E8:A7") ke desimal murni ("2817030449")
         const decimalUid = hexToDecimal(rawUid, true);
         await processAbsenRecord(decimalUid);
       });
 
       ndef.addEventListener("readingerror", () => {
-        setErrorMsg("Gagal membaca tag NFC. Silakan coba lagi.");
+        setErrorMsg("Gagal membaca tag NFC. Silakan dekatkan kartu kembali ke belakang HP.");
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+          navigator.vibrate(200);
+        }
       });
     } catch (error: any) {
       setIsScanning(false);
-      setErrorMsg(`Error Web NFC: ${error.message}`);
+      if (error.name === "NotAllowedError") {
+        setErrorMsg("Izin akses NFC ditolak atau belum diizinkan. Silakan izinkan akses NFC di Chrome.");
+      } else if (error.name === "NotSupportedError") {
+        setErrorMsg("Browser atau HP Android Anda belum mendukung Web NFC.");
+        setShowAndroidGuideModal(true);
+      } else {
+        setErrorMsg(`Pemberitahuan NFC: ${error.message || "Gagal mengaktifkan sensor NFC"}`);
+      }
     }
   }, [processAbsenRecord]);
 
   const stopScan = useCallback(() => {
     setIsScanning(false);
+    setToastMsg({
+      type: "success",
+      text: "Pemindaian NFC Android telah dihentikan.",
+    });
+    setTimeout(() => setToastMsg(null), 2500);
   }, []);
 
   const [expandedMenus, setExpandedMenus] = useState<Record<string, boolean>>({
@@ -1620,37 +1651,69 @@ export default function NFCAttendanceApp() {
                       </div>
 
                       <h2 className="text-lg font-bold text-slate-900 mb-0.5">
-                        {isScanning ? "Menunggu Kartu..." : "Silakan Tap Kartu NFC"}
+                        {isScanning ? "Sensor Android Aktif" : "Silakan Tap Kartu NFC"}
                       </h2>
-                      <p className="text-slate-500 text-[11px] mb-3 max-w-[240px]">
-                        Tempelkan kartu NFC ke modul USB NFC Reader atau HP Android Anda.
+                      <p className="text-slate-500 text-[11px] mb-3 max-w-[260px] leading-relaxed">
+                        {isScanning
+                          ? "Dekatkan kartu NFC ke bagian belakang HP Android Anda sekarang..."
+                          : "Tempelkan kartu NFC ke modul USB Reader atau gunakan HP Android Anda."}
                       </p>
 
-                      {/* Web NFC scan trigger for supported mobile devices */}
-                      {isSupported ? (
-                        !isScanning ? (
+                      {/* Prominent Android Web NFC Scan Buttons */}
+                      <div className="w-full space-y-2 mb-2">
+                        {!isScanning ? (
                           <button
+                            id="btn-mulai-tap-android"
+                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               handleScan();
                             }}
-                            className="w-full bg-[#203598] hover:bg-[#1a2c7d] text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-all flex items-center justify-center gap-1.5 text-xs"
+                            className="w-full bg-[#203598] hover:bg-[#182a7a] active:bg-[#121f5c] text-white font-bold py-2.5 px-4 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 text-xs sm:text-sm active:scale-98 cursor-pointer group"
                           >
-                            <Activity size={15} />
-                            Mulai Scan Web NFC
+                            <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
+                              <Smartphone className="w-4 h-4 text-emerald-300 group-hover:scale-110 transition-transform" />
+                            </div>
+                            <span>Mulai Tap di Android</span>
                           </button>
                         ) : (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              stopScan();
-                            }}
-                            className="w-full bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2 px-4 rounded-lg border border-red-200 transition-all flex items-center justify-center gap-1.5 text-xs"
-                          >
-                            Batal Scan Web NFC
-                          </button>
-                        )
-                      ) : null}
+                          <div className="space-y-1.5 w-full">
+                            <div className="p-2 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center justify-between text-xs text-emerald-900 font-bold shadow-2xs">
+                              <div className="flex items-center gap-2">
+                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping shrink-0" />
+                                <span className="text-[11px]">NFC Android Sedang Memindai</span>
+                              </div>
+                              <span className="text-[10px] bg-emerald-200 text-emerald-950 px-2 py-0.5 rounded-md font-mono">
+                                ACTIVE
+                              </span>
+                            </div>
+                            <button
+                              id="btn-hentikan-tap-android"
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                stopScan();
+                              }}
+                              className="w-full bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-bold py-2 px-3 rounded-xl border border-rose-200 transition-all flex items-center justify-center gap-1.5 text-xs active:scale-98 cursor-pointer"
+                            >
+                              <X className="w-4 h-4" />
+                              <span>Hentikan Tap Android</span>
+                            </button>
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowAndroidGuideModal(true);
+                          }}
+                          className="w-full text-slate-500 hover:text-[#203598] py-1 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <HelpCircle className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                          <span>Panduan / Cara Tap di HP Android</span>
+                        </button>
+                      </div>
 
                       {usbInputVal && (
                         <div className="mt-2 px-2.5 py-1 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded tracking-wider">
@@ -1822,6 +1885,119 @@ export default function NFCAttendanceApp() {
         isOpen={isAuthModalOpen}
         onLoginSuccess={handleLoginSuccess}
       />
+
+      {/* Android Web NFC Guide Modal */}
+      {showAndroidGuideModal && (
+        <div
+          id="modal-android-nfc-guide"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in"
+          onClick={() => setShowAndroidGuideModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-slate-200 relative overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#203598] flex items-center justify-center shrink-0">
+                  <Smartphone className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-slate-900 leading-snug">
+                    Cara Tap Kartu NFC di HP Android
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Petunjuk penggunaan fitur Web NFC di perangkat Android
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAndroidGuideModal(false)}
+                className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Steps Content */}
+            <div className="py-4 space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                  1
+                </div>
+                <div className="text-xs text-slate-700 space-y-1">
+                  <strong className="text-slate-900 block font-bold">Aktifkan Sensor NFC di HP Android</strong>
+                  <span>Buka <strong>Pengaturan (Settings)</strong> &gt; <strong>Koneksi / Perangkat Terhubung</strong> &gt; pastikan <strong>NFC</strong> dalam posisi <strong>AKTIF (ON)</strong>.</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                  2
+                </div>
+                <div className="text-xs text-slate-700 space-y-1">
+                  <strong className="text-slate-900 block font-bold">Gunakan Browser Google Chrome</strong>
+                  <span>Buka tautan website presensi ini melalui aplikasi <strong>Google Chrome</strong> di Android (bukan in-app browser seperti WhatsApp/Instagram).</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                  3
+                </div>
+                <div className="text-xs text-slate-700 space-y-1">
+                  <strong className="text-slate-900 block font-bold">Tekan &quot;Mulai Tap di Android&quot; &amp; Beri Izin</strong>
+                  <span>Klik tombol biru <strong>&quot;Mulai Tap di Android&quot;</strong>, lalu tekan <strong>&quot;Izinkan&quot; (Allow)</strong> saat Chrome meminta izin sensor NFC.</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="w-6 h-6 rounded-full bg-[#203598] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                  4
+                </div>
+                <div className="text-xs text-slate-700 space-y-1">
+                  <strong className="text-slate-900 block font-bold">Dekatkan Kartu ke Bagian Belakang HP</strong>
+                  <span>Tempelkan kartu peserta ke bagian punggung/belakang HP Android (biasanya dekat kamera). HP akan bergetar dan data kehadiran langsung masuk secara otomatis!</span>
+                </div>
+              </div>
+
+              <div className="p-3 bg-blue-50/80 rounded-xl border border-blue-200 text-xs text-blue-900 flex items-start gap-2.5">
+                <Usb className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
+                <div>
+                  <strong>Penggunaan USB NFC Reader di Laptop/PC:</strong>
+                  <p className="mt-0.5 text-blue-800 text-[11px]">
+                    Jika menggunakan laptop dengan modul USB Reader, sistem langsung aktif otomatis tanpa perlu menekan tombol ini.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowAndroidGuideModal(false)}
+                className="px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Tutup
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAndroidGuideModal(false);
+                  handleScan();
+                }}
+                className="px-5 py-2.5 text-xs font-bold text-white bg-[#203598] hover:bg-[#182a7a] rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer"
+              >
+                <Smartphone className="w-4 h-4 text-emerald-300" />
+                <span>Mulai Scan Sekarang</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Bottom Status Bar */}
       <footer className="h-10 bg-white border-t border-slate-200 flex items-center justify-between px-6 shrink-0 z-30">

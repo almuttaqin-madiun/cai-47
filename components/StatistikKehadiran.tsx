@@ -90,6 +90,144 @@ interface SessionAttendanceStat {
   latestTime?: Date;
 }
 
+// Helper for universal gender normalization
+export function normalizeGender(item: any): "L" | "P" {
+  if (!item) return "L";
+
+  // 1. Check direct gender properties
+  const val = String(
+    item.jenis_kelamin ||
+    item.jenisKelamin ||
+    item.gender ||
+    item.jk ||
+    item.sex ||
+    item.kelamin ||
+    ""
+  )
+    .trim()
+    .toUpperCase();
+
+  if (
+    val === "P" ||
+    val.startsWith("P") ||
+    val.includes("WANITA") ||
+    val.includes("PUTRI") ||
+    val.includes("PEREMPUAN") ||
+    val.includes("FEMALE") ||
+    val.includes("AKHWAT") ||
+    val.includes("CEWEK")
+  ) {
+    return "P";
+  }
+
+  if (
+    val === "L" ||
+    val.startsWith("L") ||
+    val.includes("PRIA") ||
+    val.includes("PUTRA") ||
+    val.includes("LAKI") ||
+    val.includes("MALE") ||
+    val.includes("IKHWAN") ||
+    val.includes("COWOK")
+  ) {
+    return "L";
+  }
+
+  // 2. Check context words in tenda, grup, dapukan
+  const textContext = `${item.tenda || ""} ${item.grup || ""} ${item.dapukan || ""} ${item.keterangan || ""}`.toLowerCase();
+  if (
+    textContext.includes("putri") ||
+    textContext.includes("perempuan") ||
+    textContext.includes("wanita") ||
+    textContext.includes("akhwat")
+  ) {
+    return "P";
+  }
+  if (
+    textContext.includes("putra") ||
+    textContext.includes("laki") ||
+    textContext.includes("pria") ||
+    textContext.includes("ikhwan")
+  ) {
+    return "L";
+  }
+
+  // 3. Fallback name checking
+  const nama = String(item.nama || item.nama_peserta || "").toLowerCase();
+  if (nama.includes("binti") || nama.includes("bte.") || nama.includes("bte ") || nama.includes("bint ")) {
+    return "P";
+  }
+  if (nama.includes(" bin ") || nama.endsWith(" bin")) {
+    return "L";
+  }
+
+  return "L";
+}
+
+// Helper to determine exact Tepat Waktu vs Terlambat status
+export function checkAttendanceStatus(
+  rec: RawAttendance,
+  session?: {
+    jam_mulai?: string;
+    jamMulai?: string;
+    toleransi_menit?: number;
+    toleransiMenit?: number;
+    waktu_telat?: string;
+    waktuTelat?: string;
+  }
+): { isLate: boolean; menitTelat: number } {
+  // 1. Explicit status string check (case-insensitive)
+  const rawStatus = String(rec.status_kehadiran || "").trim().toLowerCase();
+  if (rawStatus.includes("terlambat") || rawStatus.includes("telat") || rawStatus.includes("late")) {
+    return { isLate: true, menitTelat: Number(rec.menit_terlambat || 0) };
+  }
+
+  // 2. Explicit positive menit_terlambat
+  if (Number(rec.menit_terlambat || 0) > 0) {
+    return { isLate: true, menitTelat: Number(rec.menit_terlambat) };
+  }
+
+  // 3. Explicit Tepat Waktu status
+  if (rawStatus.includes("tepat") || rawStatus.includes("ontime") || rawStatus === "tepat waktu") {
+    return { isLate: false, menitTelat: 0 };
+  }
+
+  // 4. Time-based calculation against session schedule
+  const jamMulai = session?.jam_mulai || session?.jamMulai;
+  if (jamMulai && rec.timestamp) {
+    try {
+      const recDate = new Date(rec.timestamp);
+      if (!isNaN(recDate.getTime())) {
+        const tapMinutes = recDate.getHours() * 60 + recDate.getMinutes();
+
+        const [stH, stM] = jamMulai.split(":").map(Number);
+        if (!isNaN(stH) && !isNaN(stM)) {
+          const startMinutes = stH * 60 + stM;
+          const toleransi = session?.toleransi_menit || session?.toleransiMenit || 15;
+          let batasMinutes = startMinutes + toleransi;
+
+          const waktuTelat = session?.waktu_telat || session?.waktuTelat;
+          if (waktuTelat && waktuTelat.includes(":")) {
+            const [wtH, wtM] = waktuTelat.split(":").map(Number);
+            if (!isNaN(wtH) && !isNaN(wtM)) {
+              batasMinutes = wtH * 60 + wtM;
+            }
+          }
+
+          if (tapMinutes > batasMinutes) {
+            const diff = Math.max(1, tapMinutes - startMinutes);
+            return { isLate: true, menitTelat: diff };
+          } else {
+            return { isLate: false, menitTelat: 0 };
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  return { isLate: false, menitTelat: 0 };
+}
+
 // -------------------------------------------------------------
 // Interactive Modern SVG Donut Chart Component
 // -------------------------------------------------------------
@@ -99,6 +237,8 @@ export const DONUT_COLORS = {
   mint: "#59BA9B",   // Top-Left / Mint Teal Green
   purple: "#9b85ca",
   slate: "#94a3b8",
+  male: "#3B82F6",   // Putra Indigo Blue
+  female: "#EC4899", // Putri Pink Rose
 };
 
 export interface DonutSliceItem {
@@ -116,8 +256,11 @@ interface DonutChartProps {
   belumHadirCount?: number;
   tepatWaktuCount?: number;
   terlambatCount?: number;
+  hadirLakiLaki?: number;
+  hadirPerempuan?: number;
   total?: number;
   size?: number;
+  strokeWidth?: number;
   showDetails?: boolean;
   animate?: boolean;
   title?: string;
@@ -193,6 +336,8 @@ function ModernDonutChart({
   belumHadirCount = 0,
   tepatWaktuCount = 0,
   terlambatCount = 0,
+  hadirLakiLaki = 0,
+  hadirPerempuan = 0,
   total = 0,
   size = 280,
   showDetails = true,
@@ -214,7 +359,7 @@ function ModernDonutChart({
     const calcTotal = total > 0 ? total : Math.max(1, hadirCount + belumHadirCount);
 
     if (activeMode === "status3") {
-      // If there are recorded late participants or default 3-segment mode
+      // 3-segment mode: Belum, Terlambat, Tepat Waktu
       const tepat = tepatWaktuCount > 0 ? tepatWaktuCount : Math.max(0, hadirCount - terlambatCount);
       const telat = terlambatCount;
       const belum = belumHadirCount;
@@ -226,7 +371,7 @@ function ModernDonutChart({
           value: belum,
           color: DONUT_COLORS.blue,
           percentage: (belum / calcTotal) * 100,
-          sublabel: "Perlu tap kartu NFC",
+          sublabel: "Perlu tap kartu smartcard",
         },
         {
           id: "terlambat",
@@ -234,7 +379,7 @@ function ModernDonutChart({
           value: telat,
           color: DONUT_COLORS.coral,
           percentage: (telat / calcTotal) * 100,
-          sublabel: "Melewati batas toleransi",
+          sublabel: "Hadir melewati batas toleransi",
         },
         {
           id: "tepat",
@@ -242,7 +387,39 @@ function ModernDonutChart({
           value: tepat,
           color: DONUT_COLORS.mint,
           percentage: (tepat / calcTotal) * 100,
-          sublabel: "Hadir sebelum batas telat",
+          sublabel: "Hadir tepat waktu",
+        },
+      ];
+    } else if (activeMode === "gender3") {
+      // 3-segment mode for Gender: Putra Hadir, Putri Hadir, Belum Hadir
+      const putra = hadirLakiLaki;
+      const putri = hadirPerempuan;
+      const belum = belumHadirCount;
+
+      return [
+        {
+          id: "putra",
+          label: "Putra Hadir",
+          value: putra,
+          color: DONUT_COLORS.male,
+          percentage: (putra / calcTotal) * 100,
+          sublabel: "Peserta putra yang sudah tap",
+        },
+        {
+          id: "putri",
+          label: "Putri Hadir",
+          value: putri,
+          color: DONUT_COLORS.female,
+          percentage: (putri / calcTotal) * 100,
+          sublabel: "Peserta putri yang sudah tap",
+        },
+        {
+          id: "belum",
+          label: "Belum Hadir",
+          value: belum,
+          color: DONUT_COLORS.slate,
+          percentage: (belum / calcTotal) * 100,
+          sublabel: "Belum melakukan presensi",
         },
       ];
     } else {
@@ -272,6 +449,8 @@ function ModernDonutChart({
     belumHadirCount,
     tepatWaktuCount,
     terlambatCount,
+    hadirLakiLaki,
+    hadirPerempuan,
     total,
     activeMode,
   ]);
@@ -515,8 +694,10 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
       const nfcMap = new Map<string, string>();
       if (resNfc.data) {
         for (const n of resNfc.data) {
-          if (n.nfc_uid && (n.nama || n.nama_peserta)) {
-            nfcMap.set((n.nama || n.nama_peserta).trim().toLowerCase(), n.nfc_uid);
+          const uid = (n.nfc_uid || n.serial_number || "").trim();
+          const name = (n.nama || n.nama_peserta || "").trim().toLowerCase();
+          if (uid && name) {
+            nfcMap.set(name, uid);
           }
         }
       }
@@ -527,6 +708,7 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
         const rawDap = p.dapukan || "-";
         const rawTen = p.tenda || p.grup || "-";
         const rawFgd = p.grup_fgd || "-";
+        const uid = p.nfc_uid || p.serial_number || p.smartcard || p.uid_nfc || nfcMap.get(rawName.trim().toLowerCase()) || "";
 
         return {
           id: p.id,
@@ -536,8 +718,9 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
           tenda: rawTen !== "-" ? toTitleCase(rawTen) : "-",
           grup: rawTen !== "-" ? toTitleCase(rawTen) : "-",
           grup_fgd: rawFgd !== "-" ? toTitleCase(rawFgd) : "-",
-          jenis_kelamin: p.jenis_kelamin || (rawName.toLowerCase().includes("binti") ? "P" : "L"),
-          nfc_uid: p.nfc_uid || p.serial_number || nfcMap.get(rawName.trim().toLowerCase()) || "",
+          jenis_kelamin: normalizeGender(p),
+          nfc_uid: uid,
+          serial_number: uid,
         };
       });
       setPesertaList(pList);
@@ -581,8 +764,6 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
         const sesi = rawSesi ? toTitleCase(rawSesi) : "Umum";
         const key = `${uid}_${sesi}_${item.timestamp ? new Date(item.timestamp).toISOString().split("T")[0] : ""}`;
 
-        const isLate = item.status_kehadiran === "Terlambat" || Number(item.menit_terlambat || 0) > 0;
-
         if (!seenMap.has(key)) {
           seenMap.add(key);
           mergedRecords.push({
@@ -598,8 +779,8 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
             tenda: rawTen !== "-" ? toTitleCase(rawTen) : "-",
             grup: rawTen !== "-" ? toTitleCase(rawTen) : "-",
             grup_fgd: rawFgd !== "-" ? toTitleCase(rawFgd) : "-",
-            jenis_kelamin: item.jenis_kelamin,
-            status_kehadiran: isLate ? "Terlambat" : (item.status_kehadiran || "Tepat Waktu"),
+            jenis_kelamin: normalizeGender(item),
+            status_kehadiran: item.status_kehadiran || "Tepat Waktu",
             menit_terlambat: Number(item.menit_terlambat || 0),
             waktu_telat: item.waktu_telat || "",
           });
@@ -634,6 +815,14 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
   // Process Statistics per Session
   // -------------------------------------------------------------
   const totalRegisteredPeserta = pesertaList.length;
+
+  const totalPutraCount = useMemo(() => {
+    return pesertaList.filter((p) => normalizeGender(p) === "L").length;
+  }, [pesertaList]);
+
+  const totalPutriCount = useMemo(() => {
+    return pesertaList.filter((p) => normalizeGender(p) === "P").length;
+  }, [pesertaList]);
 
   const distinctDates = useMemo(() => {
     const dSet = new Set<string>();
@@ -751,20 +940,23 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
         if (uid) stat.hadirUids.add(uid);
         if (nama) stat.hadirNames.add(nama);
 
-        if (a.status_kehadiran === "Terlambat") {
-          stat.terlambatCount += 1;
-        } else {
-          stat.tepatWaktuCount += 1;
-        }
-
-        // Find participant gender
+        // Match participant in pesertaList
         const matchedPeserta = pesertaList.find(
           (p) =>
             (uid && p.nfc_uid && (p.nfc_uid === uid || hexToDecimal(p.nfc_uid, true) === uid)) ||
             (nama && p.nama && p.nama.trim().toLowerCase() === nama)
         );
 
-        const gender = matchedPeserta?.jenis_kelamin || a.jenis_kelamin || "L";
+        // Accurate late/on-time evaluation
+        const { isLate } = checkAttendanceStatus(a, stat);
+        if (isLate) {
+          stat.terlambatCount += 1;
+        } else {
+          stat.tepatWaktuCount += 1;
+        }
+
+        // Accurate gender evaluation
+        const gender = normalizeGender(matchedPeserta || a);
         if (gender === "P") {
           stat.hadirPerempuan += 1;
         } else {
@@ -789,9 +981,12 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
     statsMap.forEach((stat) => {
       const hadir = stat.hadirUids.size || stat.hadirNames.size;
       stat.hadirCount = hadir;
-      if (stat.tepatWaktuCount === 0 && stat.terlambatCount === 0 && hadir > 0) {
-        stat.tepatWaktuCount = hadir;
+      
+      // Sanity fallback
+      if (stat.tepatWaktuCount + stat.terlambatCount !== hadir) {
+        stat.tepatWaktuCount = Math.max(0, hadir - stat.terlambatCount);
       }
+      
       stat.belumHadirCount = Math.max(0, stat.totalPeserta - hadir);
       stat.persentaseHadir = stat.totalPeserta > 0 ? (hadir / stat.totalPeserta) * 100 : 0;
       stat.persentaseTepatWaktu = stat.totalPeserta > 0 ? (stat.tepatWaktuCount / stat.totalPeserta) * 100 : 0;
@@ -861,11 +1056,15 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
       peserta: Peserta;
       timestamp?: Date;
       status: "hadir";
+      statusKehadiran: "Tepat Waktu" | "Terlambat";
+      menitTerlambat: number;
     }> = [];
 
     const belumList: Array<{
       peserta: Peserta;
       status: "belum";
+      statusKehadiran: "Belum Hadir";
+      menitTerlambat: number;
     }> = [];
 
     pesertaList.forEach((p) => {
@@ -877,7 +1076,7 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
         (pNameLower && hadirSetNames.has(pNameLower));
 
       if (isHadir) {
-        // Find exact attendance record for timestamp
+        // Find exact attendance record for timestamp & status
         const matchedRec = attendanceRecords.find((a) => {
           const aUid = a.serial_number ? hexToDecimal(a.serial_number, true) : "";
           const aNameLower = (a.nama_peserta || a.nama || "").trim().toLowerCase();
@@ -889,15 +1088,21 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
           );
         });
 
+        const { isLate, menitTelat } = checkAttendanceStatus(matchedRec || ({} as any), currentSelectedStat);
+
         hadirList.push({
           peserta: p,
           timestamp: matchedRec?.timestamp ? new Date(matchedRec.timestamp) : undefined,
           status: "hadir",
+          statusKehadiran: isLate ? "Terlambat" : "Tepat Waktu",
+          menitTerlambat: menitTelat,
         });
       } else {
         belumList.push({
           peserta: p,
           status: "belum",
+          statusKehadiran: "Belum Hadir",
+          menitTerlambat: 0,
         });
       }
     });
@@ -907,7 +1112,13 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
 
   // Filter participant details by search and kelompok
   const filteredParticipants = useMemo(() => {
-    let list: Array<{ peserta: Peserta; timestamp?: Date; status: "hadir" | "belum" }> = [];
+    let list: Array<{
+      peserta: Peserta;
+      timestamp?: Date;
+      status: "hadir" | "belum";
+      statusKehadiran: string;
+      menitTerlambat: number;
+    }> = [];
     if (activeListTab === "hadir") {
       list = participantDetails.hadir;
     } else if (activeListTab === "belum") {
@@ -993,11 +1204,15 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
       "Tanggal",
       "Jam Mulai",
       "Jam Selesai",
-      "Total Peserta",
+      "Total Target",
       "Sudah Hadir",
+      "Tepat Waktu",
+      "Terlambat",
       "Belum Hadir",
       "Persentase Hadir (%)",
-      "Persentase Belum Hadir (%)",
+      "Persentase Tepat (%)",
+      "Persentase Telat (%)",
+      "Persentase Belum (%)",
       "Hadir Laki-laki",
       "Hadir Perempuan",
     ];
@@ -1010,8 +1225,12 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
       s.jamSelesai || "-",
       s.totalPeserta,
       s.hadirCount,
+      s.tepatWaktuCount,
+      s.terlambatCount,
       s.belumHadirCount,
       s.persentaseHadir.toFixed(1) + "%",
+      s.persentaseTepatWaktu.toFixed(1) + "%",
+      s.persentaseTerlambat.toFixed(1) + "%",
       s.persentaseBelumHadir.toFixed(1) + "%",
       s.hadirLakiLaki,
       s.hadirPerempuan,
@@ -1027,18 +1246,20 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
       "Dapukan",
       "Smartcard UID",
       "Waktu Presensi",
-      "Status",
+      "Status Kehadiran",
+      "Menit Telat",
     ];
     const hadirRows = participantDetails.hadir.map((item, idx) => [
       idx + 1,
       item.peserta.nama,
-      item.peserta.jenis_kelamin || "-",
+      normalizeGender(item.peserta) === "P" ? "Perempuan" : "Laki-laki",
       item.peserta.kelompok || "-",
       item.peserta.grup || item.peserta.tenda || "-",
       item.peserta.dapukan || "-",
       item.peserta.nfc_uid || "-",
       item.timestamp ? item.timestamp.toLocaleTimeString("id-ID") : "-",
-      "Sudah Hadir",
+      item.statusKehadiran,
+      item.menitTerlambat > 0 ? `${item.menitTerlambat} menit` : "-",
     ]);
 
     // Sheet 3: Daftar Peserta Belum Hadir pada Sesi Terpilih
@@ -1055,7 +1276,7 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
     const belumRows = participantDetails.belum.map((item, idx) => [
       idx + 1,
       item.peserta.nama,
-      item.peserta.jenis_kelamin || "-",
+      normalizeGender(item.peserta) === "P" ? "Perempuan" : "Laki-laki",
       item.peserta.kelompok || "-",
       item.peserta.grup || item.peserta.tenda || "-",
       item.peserta.dapukan || "-",
@@ -1090,7 +1311,7 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
       {
         sheetName: `Hadir (${currentSelectedStat.sessionName.slice(0, 15)})`,
         title: `DAFTAR PESERTA SUDAH HADIR - ${currentSelectedStat.sessionName.toUpperCase()}`,
-        subtitle: `Tanggal: ${currentSelectedStat.tanggal} | Hadir: ${currentSelectedStat.hadirCount}/${currentSelectedStat.totalPeserta} (${currentSelectedStat.persentaseHadir.toFixed(1)}%)`,
+        subtitle: `Tanggal: ${currentSelectedStat.tanggal} | Hadir: ${currentSelectedStat.hadirCount}/${currentSelectedStat.totalPeserta} (Tepat: ${currentSelectedStat.tepatWaktuCount}, Telat: ${currentSelectedStat.terlambatCount})`,
         headers: hadirHeaders,
         rows: hadirRows,
       },
@@ -1462,8 +1683,12 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
                   <div className="text-2xl sm:text-3xl font-extrabold text-slate-800">
                     {currentSelectedStat.totalPeserta}
                   </div>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    {currentSelectedStat.hadirLakiLaki} Putra • {currentSelectedStat.hadirPerempuan} Putri hadir
+                  <p className="text-[11px] text-slate-500 mt-0.5 font-medium">
+                    <span className="text-blue-700 font-bold">{currentSelectedStat.hadirLakiLaki}</span> L •{" "}
+                    <span className="text-pink-700 font-bold">{currentSelectedStat.hadirPerempuan}</span> P hadir{" "}
+                    <span className="text-slate-400 font-normal">
+                      (Total DB: {totalPutraCount} L • {totalPutriCount} P)
+                    </span>
                   </p>
                 </div>
               </div>
@@ -1503,24 +1728,24 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
                   <div className="flex items-center gap-3">
                     <span className="flex items-center gap-1.5 text-slate-700">
                       <span className="w-2.5 h-2.5 rounded-full bg-[#59BA9B]" />
-                      Tepat: <strong>{(currentSelectedStat.persentaseTepatWaktu || 0).toFixed(1)}%</strong>
+                      Tepat: <strong>{currentSelectedStat.tepatWaktuCount} ({currentSelectedStat.persentaseTepatWaktu.toFixed(1)}%)</strong>
                     </span>
                     <span className="flex items-center gap-1.5 text-slate-700">
                       <span className="w-2.5 h-2.5 rounded-full bg-[#FF8C66]" />
-                      Telat: <strong>{(currentSelectedStat.persentaseTerlambat || 0).toFixed(1)}%</strong>
+                      Telat: <strong>{currentSelectedStat.terlambatCount} ({currentSelectedStat.persentaseTerlambat.toFixed(1)}%)</strong>
                     </span>
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <span className="w-2.5 h-2.5 rounded-full bg-[#859BCA]" />
-                      Belum: <strong>{currentSelectedStat.persentaseBelumHadir.toFixed(1)}%</strong>
+                      Belum: <strong>{currentSelectedStat.belumHadirCount} ({currentSelectedStat.persentaseBelumHadir.toFixed(1)}%)</strong>
                     </span>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-[11px] px-2 py-0.5 bg-blue-50 text-blue-700 font-semibold rounded-md">
-                      L: {currentSelectedStat.hadirLakiLaki}
+                    <span className="text-[11px] px-2 py-0.5 bg-blue-50 text-blue-700 font-semibold rounded-md border border-blue-200/60">
+                      Putra: <strong>{currentSelectedStat.hadirLakiLaki}</strong>/{totalPutraCount}
                     </span>
-                    <span className="text-[11px] px-2 py-0.5 bg-pink-50 text-pink-700 font-semibold rounded-md">
-                      P: {currentSelectedStat.hadirPerempuan}
+                    <span className="text-[11px] px-2 py-0.5 bg-pink-50 text-pink-700 font-semibold rounded-md border border-pink-200/60">
+                      Putri: <strong>{currentSelectedStat.hadirPerempuan}</strong>/{totalPutriCount}
                     </span>
                   </div>
                 </div>
@@ -1813,7 +2038,11 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
                         <tr
                           key={`${item.peserta.id}_${idx}`}
                           className={`hover:bg-slate-50/80 transition-colors ${
-                            isHadir ? "bg-emerald-50/20" : ""
+                            isHadir
+                              ? item.statusKehadiran === "Terlambat"
+                                ? "bg-amber-50/20"
+                                : "bg-emerald-50/20"
+                              : ""
                           }`}
                         >
                           <td className="py-2.5 px-3.5 text-center text-slate-400 font-mono">
@@ -1824,13 +2053,13 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
                           </td>
                           <td className="py-2.5 px-3.5 text-center">
                             <span
-                              className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] font-bold ${
-                                item.peserta.jenis_kelamin === "P"
-                                  ? "bg-pink-100 text-pink-700"
-                                  : "bg-blue-100 text-blue-700"
+                              className={`inline-flex items-center justify-center px-1.5 py-0.5 rounded-md text-[10px] font-bold ${
+                                normalizeGender(item.peserta) === "P"
+                                  ? "bg-pink-100 text-pink-700 border border-pink-200"
+                                  : "bg-blue-100 text-blue-700 border border-blue-200"
                               }`}
                             >
-                              {item.peserta.jenis_kelamin || "L"}
+                              {normalizeGender(item.peserta) === "P" ? "P (Putri)" : "L (Putra)"}
                             </span>
                           </td>
                           <td className="py-2.5 px-3.5 text-slate-700 font-medium">
@@ -1847,7 +2076,7 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
                           </td>
                           <td className="py-2.5 px-3.5 text-slate-600 text-[11px]">
                             {item.timestamp ? (
-                              <span className="font-semibold text-emerald-700">
+                              <span className={`font-semibold ${item.statusKehadiran === "Terlambat" ? "text-amber-700" : "text-emerald-700"}`}>
                                 {item.timestamp.toLocaleTimeString("id-ID")} WIB
                               </span>
                             ) : (
@@ -1856,10 +2085,17 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
                           </td>
                           <td className="py-2.5 px-3.5 text-center">
                             {isHadir ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                <Check className="w-3 h-3 text-emerald-700" />
-                                Hadir
-                              </span>
+                              item.statusKehadiran === "Terlambat" ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-[#FF8C66]/15 text-[#943312] border border-[#FF8C66]/40">
+                                  <Clock className="w-3 h-3 text-[#c04b23]" />
+                                  <span>Telat {item.menitTerlambat > 0 ? `(${item.menitTerlambat}m)` : ""}</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-[#59BA9B]/15 text-[#1f5847] border border-[#59BA9B]/40">
+                                  <Check className="w-3 h-3 text-[#2d7760]" />
+                                  <span>Tepat Waktu</span>
+                                </span>
+                              )
                             ) : (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-slate-100 text-slate-600 border border-slate-200">
                                 Belum Hadir

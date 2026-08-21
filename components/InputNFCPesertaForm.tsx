@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Nfc, Search, Check, Save, AlertCircle, CheckCircle2, Copy, RefreshCw, UserCheck, Database, Code, Info } from "lucide-react";
+import { Nfc, Search, Check, Save, AlertCircle, CheckCircle2, Copy, RefreshCw, UserCheck, Database, Code, Info, Smartphone, HelpCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { hexToDecimal, toTitleCase } from "@/lib/utils";
 
@@ -396,25 +396,25 @@ export default function InputNFCPesertaForm() {
                 </div>
 
                 {isScanning ? (
-                  <div className="space-y-1">
-                    <p className="text-sm font-bold text-[#203598]">Menunggu Kartu NFC...</p>
-                    <p className="text-xs text-slate-500">Tempelkan kartu ke bagian belakang HP/Perangkat</p>
+                  <div className="space-y-1.5 w-full">
+                    <p className="text-sm font-bold text-[#203598]">Sensor NFC Android Aktif...</p>
+                    <p className="text-xs text-slate-500">Tempelkan kartu ke bagian belakang HP Android Anda</p>
                     <button
                       type="button"
                       onClick={stopScan}
-                      className="mt-2 text-xs font-semibold text-red-600 hover:underline"
+                      className="mt-1 px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold transition-colors cursor-pointer"
                     >
-                      Batal Scan
+                      Hentikan Scan
                     </button>
                   </div>
                 ) : (
                   <button
                     type="button"
                     onClick={handleScanNFC}
-                    className="px-4 py-2 bg-[#203598] hover:bg-[#1a2c7d] text-white rounded-xl text-xs font-semibold shadow-md transition-all flex items-center gap-2"
+                    className="w-full px-4 py-2.5 bg-[#203598] hover:bg-[#182a7a] active:bg-[#121f5c] text-white rounded-xl text-xs sm:text-sm font-bold shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
                   >
-                    <Nfc className="w-4 h-4" />
-                    Mulai Scan Kartu NFC
+                    <Smartphone className="w-4 h-4 text-emerald-300" />
+                    <span>Mulai Tap NFC di Android</span>
                   </button>
                 )}
               </div>
