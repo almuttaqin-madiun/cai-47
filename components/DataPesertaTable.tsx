@@ -585,20 +585,44 @@ export default function DataPesertaTable({ onGoToInput }: DataPesertaTableProps)
       // If smartcard / nfc_uid is set, also sync to nfc_peserta table in Supabase
       if (editSmartcard.trim()) {
         try {
-          await supabase.from("nfc_peserta").upsert(
-            {
-              nfc_uid: editSmartcard.trim(),
-              peserta_id: editingPeserta.id,
-              nama: editNama.trim(),
-              kelompok: editKelompok.trim(),
-              dapukan: editDapukan.trim(),
-              grup: cleanGrup,
-              tenda: cleanGrup,
-              grup_fgd: editGrupFgd.trim(),
-              jenis_kelamin: editJenisKelamin.trim() || getGender(editingPeserta),
-            },
-            { onConflict: "nfc_uid" }
-          );
+          const cardClean = editSmartcard.trim();
+          const cardVariations = Array.from(
+            new Set([
+              cardClean,
+              cardClean.toLowerCase(),
+              cardClean.toUpperCase(),
+              cardClean.replace(/^0+/, ""),
+              cardClean.padStart(10, "0"),
+            ])
+          ).filter(Boolean);
+
+          const { data: existingNfc } = await supabase
+            .from("nfc_peserta")
+            .select("id, nfc_uid, peserta_id")
+            .in("nfc_uid", cardVariations);
+
+          const nfcPayload: any = {
+            nfc_uid: cardClean,
+            peserta_id: editingPeserta.id,
+            nama: editNama.trim(),
+            kelompok: editKelompok.trim(),
+            dapukan: editDapukan.trim(),
+            grup: cleanGrup,
+            tenda: cleanGrup,
+            grup_fgd: editGrupFgd.trim(),
+            jenis_kelamin: editJenisKelamin.trim() || getGender(editingPeserta),
+          };
+
+          if (existingNfc && existingNfc.length > 0) {
+            await supabase.from("nfc_peserta").update(nfcPayload).eq("id", existingNfc[0].id);
+          } else {
+            const { error: upsertErr } = await supabase
+              .from("nfc_peserta")
+              .upsert(nfcPayload, { onConflict: "nfc_uid" });
+            if (upsertErr) {
+              await supabase.from("nfc_peserta").insert([nfcPayload]);
+            }
+          }
         } catch (nfcSyncErr) {
           console.warn("Sync nfc_peserta error (non-fatal):", nfcSyncErr);
         }

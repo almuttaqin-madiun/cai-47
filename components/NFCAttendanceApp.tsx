@@ -195,6 +195,71 @@ export default function NFCAttendanceApp() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const usbInputRef = useRef<HTMLInputElement>(null);
+  const pesertaCacheRef = useRef<Map<string, { id?: number; nama: string; foto?: string; foto_url?: string; kelompok?: string; dapukan?: string }>>(new Map());
+  const attendedSetRef = useRef<Set<string>>(new Set());
+  const lastProcessedUidRef = useRef<{ uid: string; time: number }>({ uid: "", time: 0 });
+
+  // Detect mobile or touch screen device to completely suppress on-screen keyboard
+  const isTouchDevice = useCallback(() => {
+    if (typeof window === "undefined") return false;
+    return (
+      "ontouchstart" in window ||
+      navigator.maxTouchPoints > 0 ||
+      /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+    );
+  }, []);
+
+  // Helper to register participant into ultra-fast in-memory cache
+  const cacheParticipant = useCallback((p: any) => {
+    if (!p) return;
+    const nama = p.nama || p.nama_peserta || "";
+    if (!nama) return;
+    const item = {
+      id: p.id || p.peserta_id,
+      nama,
+      foto: p.foto || p.foto_url,
+      foto_url: p.foto_url || p.foto,
+      kelompok: p.kelompok,
+      dapukan: p.dapukan,
+    };
+
+    const rawCandidates: string[] = [];
+    if (p.nfc_uid) rawCandidates.push(String(p.nfc_uid).trim());
+    if (p.smartcard) rawCandidates.push(String(p.smartcard).trim());
+    if (p.uid_nfc) rawCandidates.push(String(p.uid_nfc).trim());
+    if (p.serial_number) rawCandidates.push(String(p.serial_number).trim());
+    if (p.id) rawCandidates.push(String(p.id).trim());
+
+    rawCandidates.forEach((raw) => {
+      if (!raw) return;
+      const candidates = getAllUidCandidates(raw);
+      if (!candidates.includes(raw)) candidates.push(raw);
+
+      candidates.forEach((cand) => {
+        if (cand) {
+          pesertaCacheRef.current.set(cand, item);
+          pesertaCacheRef.current.set(cand.toLowerCase(), item);
+          pesertaCacheRef.current.set(cand.toUpperCase(), item);
+
+          // Padded and unpadded variations
+          const unpad = cand.replace(/^0+/, "");
+          if (unpad) {
+            pesertaCacheRef.current.set(unpad, item);
+            pesertaCacheRef.current.set(unpad.toLowerCase(), item);
+          }
+          if (unpad && unpad.length < 10) {
+            const pad10 = unpad.padStart(10, "0");
+            pesertaCacheRef.current.set(pad10, item);
+            pesertaCacheRef.current.set(pad10.toLowerCase(), item);
+          }
+        }
+      });
+    });
+
+    if (nama) {
+      pesertaCacheRef.current.set(nama.toLowerCase(), item);
+    }
+  }, []);
 
   // Check saved session on mount; if none, show role selection modal immediately
   useEffect(() => {
@@ -210,13 +275,23 @@ export default function NFCAttendanceApp() {
           if (allowed.length > 0 && !allowed.includes(activeTab)) {
             setActiveTab(allowed[0] as any);
           }
-          return;
         }
       } catch (e) {}
+    } else {
+      setIsAuthModalOpen(true);
     }
-    // Not authenticated -> open modal
-    setIsAuthModalOpen(true);
-  }, []);
+
+    // Warm-up participant cache from local storage immediately for zero-lag scanning
+    try {
+      const localPesertaStr = localStorage.getItem("cai_peserta");
+      if (localPesertaStr) {
+        const list = JSON.parse(localPesertaStr);
+        if (Array.isArray(list)) {
+          list.forEach(cacheParticipant);
+        }
+      }
+    } catch (e) {}
+  }, [cacheParticipant, activeTab]);
 
   const handleLoginSuccess = (user: UserSession) => {
     setCurrentUser(user);
@@ -243,29 +318,36 @@ export default function NFCAttendanceApp() {
     return allowed.includes(tabKey);
   };
 
-  // Active session state auto check
+  // Active session state auto check & manual selector
+  const [allSessions, setAllSessions] = useState<SesiAbsensi[]>([]);
+  const allSessionsRef = useRef<SesiAbsensi[]>([]);
+  const [selectedManualSessionId, setSelectedManualSessionId] = useState<string>("AUTO");
   const [activeSession, setActiveSession] = useState<SesiAbsensi | null>(null);
 
   const focusUsbInput = useCallback(() => {
+    // IMPORTANT: On touch / mobile devices, NEVER focus input to prevent virtual on-screen keyboard popup
+    if (isTouchDevice()) return;
+
     if (
       usbInputRef.current &&
       activeTab === "presensi" &&
-      !isAuthModalOpen &&
-      !dialogState.isOpen
+      !isAuthModalOpen
     ) {
       const activeTag = (document.activeElement?.tagName || "").toUpperCase();
       if (activeTag !== "INPUT" && activeTag !== "TEXTAREA" && activeTag !== "SELECT") {
-        usbInputRef.current.focus();
-        setIsUsbFocused(true);
+        try {
+          usbInputRef.current.focus({ preventScroll: true });
+          setIsUsbFocused(true);
+        } catch (e) {}
       }
     }
-  }, [activeTab, isAuthModalOpen, dialogState.isOpen]);
+  }, [activeTab, isAuthModalOpen, isTouchDevice]);
 
   useEffect(() => {
-    if (activeTab === "presensi" && usbModeActive && !isAuthModalOpen && !dialogState.isOpen) {
+    if (activeTab === "presensi" && usbModeActive && !isAuthModalOpen) {
       focusUsbInput();
     }
-  }, [activeTab, usbModeActive, isAuthModalOpen, dialogState.isOpen, focusUsbInput]);
+  }, [activeTab, usbModeActive, isAuthModalOpen, focusUsbInput]);
 
   const checkActiveSession = useCallback(async () => {
     try {
@@ -294,24 +376,66 @@ export default function NFCAttendanceApp() {
         sessions = combined;
       }
 
+      setAllSessions(sessions);
+      allSessionsRef.current = sessions;
+
+      // Calculate time in local timezone
       const now = new Date();
-      const todayStr = now.toISOString().split("T")[0];
+      const localDateStr = now.toLocaleDateString("en-CA"); // YYYY-MM-DD
+      const utcDateStr = now.toISOString().split("T")[0];
       const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
-      const matched = sessions.find((s) => {
-        if (s.tanggal !== todayStr) return false;
-        const [sh, sm] = s.jam_mulai.split(":").map(Number);
-        const [eh, em] = s.jam_selesai.split(":").map(Number);
-        const startM = sh * 60 + sm;
-        const endM = eh * 60 + em;
-        return currentMinutes >= startM && currentMinutes <= endM;
-      });
+      let matched: SesiAbsensi | null = null;
+
+      // 1. If manual session is selected by operator
+      if (selectedManualSessionId && selectedManualSessionId !== "AUTO") {
+        matched = sessions.find((s) => String(s.id) === String(selectedManualSessionId)) || null;
+      }
+
+      // 2. Auto match: Ongoing session right now
+      if (!matched) {
+        matched =
+          sessions.find((s) => {
+            const isToday = !s.tanggal || s.tanggal === localDateStr || s.tanggal === utcDateStr;
+            if (!isToday && s.tanggal) return false;
+            const [sh, sm] = s.jam_mulai.split(":").map(Number);
+            const [eh, em] = s.jam_selesai.split(":").map(Number);
+            const startM = (isNaN(sh) ? 8 : sh) * 60 + (isNaN(sm) ? 0 : sm);
+            const endM = (isNaN(eh) ? 23 : eh) * 60 + (isNaN(em) ? 59 : em);
+            return currentMinutes >= startM && currentMinutes <= endM;
+          }) || null;
+      }
+
+      // 3. Auto match: Late attendance window (current time past start time today)
+      if (!matched) {
+        const pastSessions = sessions.filter((s) => {
+          const isToday = !s.tanggal || s.tanggal === localDateStr || s.tanggal === utcDateStr;
+          if (!isToday && s.tanggal) return false;
+          const [sh, sm] = s.jam_mulai.split(":").map(Number);
+          const startM = (isNaN(sh) ? 8 : sh) * 60 + (isNaN(sm) ? 0 : sm);
+          return currentMinutes >= startM;
+        });
+        if (pastSessions.length > 0) {
+          // Sort by closest start time
+          pastSessions.sort((a, b) => {
+            const [aH, aM] = a.jam_mulai.split(":").map(Number);
+            const [bH, bM] = b.jam_mulai.split(":").map(Number);
+            return (bH * 60 + bM) - (aH * 60 + aM);
+          });
+          matched = pastSessions[0];
+        }
+      }
+
+      // 4. Fallback: Any active session marked is_active
+      if (!matched) {
+        matched = sessions.find((s) => s.is_active) || (sessions.length > 0 ? sessions[0] : null);
+      }
 
       setActiveSession(matched || null);
     } catch (err) {
       console.error("Error checking active session:", err);
     }
-  }, []);
+  }, [selectedManualSessionId]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -333,20 +457,35 @@ export default function NFCAttendanceApp() {
 
       let list = resP.data || [];
       const nfcMap = new Map<number, any>();
-      if (resNfc.data) {
-        for (const n of resNfc.data) {
-          if (n.peserta_id) {
-            nfcMap.set(n.peserta_id, n);
-          }
+      const nfcList = resNfc.data || [];
+
+      // Warm up cache for all records in nfc_peserta
+      for (const n of nfcList) {
+        if (n.peserta_id) {
+          nfcMap.set(n.peserta_id, n);
+        }
+        if (n.nama || n.nama_peserta) {
+          cacheParticipant({
+            id: n.peserta_id || n.id,
+            nama: n.nama || n.nama_peserta,
+            nfc_uid: n.nfc_uid,
+            smartcard: n.nfc_uid,
+            serial_number: n.nfc_uid,
+            kelompok: n.kelompok,
+            dapukan: n.dapukan,
+            foto: n.foto,
+          });
         }
       }
 
       list = list.map((p: any) => {
         const nRecord = nfcMap.get(p.id);
-        return {
+        const mapped = {
           ...p,
-          nfc_uid: nRecord?.nfc_uid || p.nfc_uid || p.serial_number || "",
+          nfc_uid: nRecord?.nfc_uid || p.nfc_uid || p.smartcard || p.serial_number || "",
         };
+        cacheParticipant(mapped);
+        return mapped;
       });
 
       setAllPesertaList(list);
@@ -355,7 +494,12 @@ export default function NFCAttendanceApp() {
     } finally {
       setLoadingPesertaList(false);
     }
-  }, []);
+  }, [cacheParticipant]);
+
+  // Load participant list on mount and periodically
+  useEffect(() => {
+    fetchPesertaList();
+  }, [fetchPesertaList]);
 
   const handleStartNfcTest = useCallback(async () => {
     if (typeof window === "undefined" || !("NDEFReader" in window)) {
@@ -426,6 +570,7 @@ export default function NFCAttendanceApp() {
         const [resRiwayat, resKehadiran] = await Promise.all([qRiwayat, qKehadiran]);
 
         const recordMap = new Map<string, AttendanceRecord>();
+        attendedSetRef.current.clear();
 
         // Load records from riwayat_absen
         if (resRiwayat.data) {
@@ -433,6 +578,12 @@ export default function NFCAttendanceApp() {
             const uidClean = hexToDecimal(String(d.serial_number || "").trim(), true);
             const key = `rw-${d.id}`;
             const photoUrlData = supabase.storage.from("CAI 2026").getPublicUrl(`Foto Profil/${uidClean}.jpg`);
+
+            attendedSetRef.current.add(uidClean);
+            attendedSetRef.current.add(uidClean.toLowerCase());
+            if (d.nama_peserta || d.nama) {
+              attendedSetRef.current.add((d.nama_peserta || d.nama).toLowerCase());
+            }
 
             recordMap.set(key, {
               id: key,
@@ -453,6 +604,12 @@ export default function NFCAttendanceApp() {
           for (const d of resKehadiran.data) {
             const uidClean = hexToDecimal(String(d.serial_number || "").trim(), true);
             const timeKey = d.timestamp ? new Date(d.timestamp).getTime() : 0;
+
+            attendedSetRef.current.add(uidClean);
+            attendedSetRef.current.add(uidClean.toLowerCase());
+            if (d.nama) {
+              attendedSetRef.current.add(d.nama.toLowerCase());
+            }
 
             const alreadyExists = Array.from(recordMap.values()).some(
               (r) => r.serialNumber === uidClean && Math.abs(r.timestamp.getTime() - timeKey) < 5000
@@ -490,8 +647,8 @@ export default function NFCAttendanceApp() {
 
     fetchInitialRecords();
 
-    // Auto-polling interval every 3 seconds for reliable multi-device sync
-    const pollInterval = setInterval(fetchInitialRecords, 3000);
+    // Auto-polling interval every 4 seconds for reliable multi-device sync
+    const pollInterval = setInterval(fetchInitialRecords, 4000);
 
     // Helper for adding realtime record
     const handleNewRecord = (newRec: any, source: string) => {
@@ -501,6 +658,12 @@ export default function NFCAttendanceApp() {
 
       const uidClean = hexToDecimal(String(newRec.serial_number || "").trim(), true);
       const timeVal = newRec.timestamp ? new Date(newRec.timestamp).getTime() : Date.now();
+
+      attendedSetRef.current.add(uidClean);
+      attendedSetRef.current.add(uidClean.toLowerCase());
+      if (newRec.nama_peserta || newRec.nama) {
+        attendedSetRef.current.add((newRec.nama_peserta || newRec.nama).toLowerCase());
+      }
 
       setRecords((prev) => {
         const isDuplicate = prev.some(
@@ -557,28 +720,19 @@ export default function NFCAttendanceApp() {
     async (uid: string) => {
       if (!uid || !uid.trim()) return;
       const cleanInput = uid.trim();
-      // Standarisasi: Pastikan UID diubah ke desimal jika berupa format hex (misal 31:79:E8:A7)
       const cleanUid = hexToDecimal(cleanInput, true) || cleanInput;
 
-      // Sound feedback
-      try {
-        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.2);
-      } catch (e) {}
-
-      if (navigator.vibrate) {
-        navigator.vibrate(200);
+      // 0. Debounce rapid repeat of identical UID (<400ms)
+      const nowTime = Date.now();
+      if (
+        lastProcessedUidRef.current.uid.toLowerCase() === cleanUid.toLowerCase() &&
+        nowTime - lastProcessedUidRef.current.time < 400
+      ) {
+        return;
       }
+      lastProcessedUidRef.current = { uid: cleanUid, time: nowTime };
 
-      // 1. Lookup participant name and photo from Supabase & Local Storage
+      // 1. Instant Lookup from in-memory cache
       let namaPengguna = "";
       let photoUrlFound = "";
       const uidCandidates = getAllUidCandidates(cleanInput);
@@ -586,111 +740,106 @@ export default function NFCAttendanceApp() {
         uidCandidates.push(cleanUid);
       }
 
-      try {
-        // Search nfc_peserta table by nfc_uid candidates
-        const { data: nfcDataList } = await supabase
-          .from("nfc_peserta")
-          .select("nama, nama_peserta, peserta_id")
-          .in("nfc_uid", uidCandidates);
-
-        if (nfcDataList && nfcDataList.length > 0) {
-          const nfcRec = nfcDataList[0];
-          namaPengguna = nfcRec.nama || nfcRec.nama_peserta || "";
-
-          // If name on nfc_peserta is blank or to fetch photo, retrieve from joined 'peserta' table
-          if (nfcRec.peserta_id) {
-            const { data: pDetail } = await supabase
-              .from("peserta")
-              .select("nama, nama_peserta, foto, foto_url")
-              .eq("id", nfcRec.peserta_id)
-              .maybeSingle();
-
-            if (pDetail) {
-              if (!namaPengguna) namaPengguna = pDetail.nama || pDetail.nama_peserta || "";
-              photoUrlFound = pDetail.foto || pDetail.foto_url || "";
-            }
-          }
+      for (const cand of uidCandidates) {
+        const hit = pesertaCacheRef.current.get(cand) || pesertaCacheRef.current.get(cand.toLowerCase());
+        if (hit) {
+          namaPengguna = hit.nama;
+          photoUrlFound = hit.foto || hit.foto_url || "";
+          break;
         }
+      }
 
-        // B. Search nfc_peserta by client list fetch if exact query yielded nothing
-        if (!namaPengguna) {
-          const { data: nfcAll } = await supabase
-            .from("nfc_peserta")
-            .select("*")
-            .limit(500);
+      // If not in cache, fallback query Supabase & LocalStorage (fast timeout protected)
+      if (!namaPengguna) {
+        try {
+          const fetchPromise = (async () => {
+            // A. Cari di tabel nfc_peserta
+            const { data: nfcDataList } = await supabase
+              .from("nfc_peserta")
+              .select("*")
+              .in("nfc_uid", uidCandidates)
+              .limit(10);
 
-          if (nfcAll && nfcAll.length > 0) {
-            const found = nfcAll.find((item: any) => {
-              const u = String(item.nfc_uid || "").trim();
-              return uidCandidates.some((cand) => cand.toLowerCase() === u.toLowerCase());
-            });
-
-            if (found) {
-              namaPengguna = found.nama || found.nama_peserta || "";
-              if (found.peserta_id) {
+            if (nfcDataList && nfcDataList.length > 0) {
+              const nfcRec = nfcDataList[0];
+              let resolvedName = nfcRec.nama || nfcRec.nama_peserta || "";
+              let resolvedPhoto = nfcRec.foto || nfcRec.foto_url || "";
+              if (nfcRec.peserta_id) {
                 const { data: pDetail } = await supabase
                   .from("peserta")
-                  .select("nama, nama_peserta, foto, foto_url")
-                  .eq("id", found.peserta_id)
+                  .select("*")
+                  .eq("id", nfcRec.peserta_id)
                   .maybeSingle();
 
                 if (pDetail) {
-                  if (!namaPengguna) namaPengguna = pDetail.nama || pDetail.nama_peserta || "";
-                  photoUrlFound = pDetail.foto || pDetail.foto_url || "";
+                  if (!resolvedName) resolvedName = pDetail.nama || pDetail.nama_peserta || "";
+                  if (!resolvedPhoto) resolvedPhoto = pDetail.foto || pDetail.foto_url || "";
                 }
               }
+              return { name: resolvedName, photo: resolvedPhoto };
             }
+
+            // B. Jika belum ketemu, cari di tabel peserta langsung
+            const { data: allP } = await supabase.from("peserta").select("*").limit(1000);
+            if (allP && allP.length > 0) {
+              const matchedP = allP.find((p: any) => {
+                const vals = [
+                  String(p.nfc_uid || "").trim(),
+                  String(p.smartcard || "").trim(),
+                  String(p.serial_number || "").trim(),
+                  String(p.uid_nfc || "").trim(),
+                ].filter(Boolean);
+
+                return vals.some((val) => {
+                  const valUnpad = val.replace(/^0+/, "");
+                  return uidCandidates.some((c) => {
+                    const cUnpad = c.replace(/^0+/, "");
+                    return (
+                      c.toLowerCase() === val.toLowerCase() ||
+                      (cUnpad && cUnpad === valUnpad)
+                    );
+                  });
+                });
+              });
+
+              if (matchedP) {
+                return {
+                  name: matchedP.nama || matchedP.nama_peserta || "",
+                  photo: matchedP.foto || matchedP.foto_url || "",
+                };
+              }
+            }
+
+            return null;
+          })();
+
+          // 1.5 second max timeout to prevent UI hanging during slow network / high traffic
+          const timeoutPromise = new Promise<{ timeout: true }>((resolve) =>
+            setTimeout(() => resolve({ timeout: true }), 1500)
+          );
+
+          const result: any = await Promise.race([fetchPromise, timeoutPromise]);
+          if (result && !result.timeout && result.name) {
+            namaPengguna = result.name;
+            photoUrlFound = result.photo || "";
           }
+        } catch (err) {
+          console.warn("Gagal fetch peserta:", err);
         }
 
-        // Fallback search directly in 'peserta' table
-        if (!namaPengguna) {
-          const { data: fallbackData } = await supabase
-            .from("peserta")
-            .select("nama, nama_peserta, foto, foto_url")
-            .or(uidCandidates.map((u) => `nfc_uid.eq.${u},serial_number.eq.${u}`).join(","))
-            .maybeSingle();
-
-          if (fallbackData) {
-            namaPengguna = fallbackData.nama || fallbackData.nama_peserta || "";
-            photoUrlFound = fallbackData.foto || fallbackData.foto_url || "";
-          }
-        }
-      } catch (err) {
-        console.warn("Gagal fetch peserta:", err);
-      }
-
-      // Determine current session/category type (makan/sholat/materi)
-      let currentJadwal = activeSession?.jadwal || activeSession?.kategori || "materi";
-      if (!activeSession) {
-        if (activeTab === "jadwal_makan") currentJadwal = "makan";
-        else if (activeTab === "jadwal_sholat") currentJadwal = "sholat";
-        else currentJadwal = "materi";
-      }
-
-      // Fallback: Call server API route /api/absen if client-side search returned empty
-      if (!namaPengguna) {
-        try {
-          const res = await fetch("/api/absen", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              serial_number: cleanUid,
-              sesi_nama: activeSession?.nama_sesi || "Umum",
-              jadwal: currentJadwal,
-              kategori: currentJadwal,
-            }),
+        // Cache the newly resolved participant for future taps
+        if (namaPengguna) {
+          cacheParticipant({
+            nfc_uid: cleanUid,
+            smartcard: cleanUid,
+            serial_number: cleanInput,
+            nama: namaPengguna,
+            foto: photoUrlFound,
           });
-          const apiResData = await res.json();
-          if (apiResData && apiResData.success && apiResData.nama) {
-            namaPengguna = apiResData.nama;
-          }
-        } catch (apiErr) {
-          console.warn("API /api/absen fallback fetch error:", apiErr);
         }
       }
 
-      // Check local storage if not found in database table
+      // Check local storage if still not found
       if (!namaPengguna && typeof window !== "undefined") {
         try {
           const localPesertaStr = localStorage.getItem("cai_peserta");
@@ -708,14 +857,14 @@ export default function NFCAttendanceApp() {
             if (found) {
               namaPengguna = found.nama || found.nama_peserta || "";
               photoUrlFound = found.foto || found.foto_url || "";
+              cacheParticipant(found);
             }
           }
         } catch (e) {}
       }
 
-      // IF UNKNOWN PARTICIPANT (No match in database)
+      // IF UNKNOWN PARTICIPANT
       if (!namaPengguna) {
-        // Error sound feedback
         try {
           const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
           const osc = audioCtx.createOscillator();
@@ -742,20 +891,82 @@ export default function NFCAttendanceApp() {
           isOpen: true,
           type: "error",
           title: "Error!",
-          message: `Kartu NFC dengan UID (${cleanUid} / Raw: ${cleanInput}) belum terdaftar di database peserta. Silakan tautkan kartu di menu 'Input Kartu NFC' atau hubungi panitia.`,
+          message: `Kartu NFC dengan UID (${cleanUid} / Raw: ${cleanInput}) belum terdaftar di database peserta. Silakan tautkan kartu di menu 'Input Kartu NFC'.`,
           serialNumber: cleanUid,
         });
 
         setTimeout(() => {
           setToastMsg(null);
-        }, 4000);
+        }, 2000);
         return;
       }
 
-      // IF PARTICIPANT FOUND (Match Success)
       namaPengguna = toTitleCase(namaPengguna);
 
-      // Sound feedback success
+      // Determine effective target session
+      const targetSession =
+        activeSession ||
+        allSessionsRef.current.find((s) => s.is_active) ||
+        (allSessionsRef.current.length > 0 ? allSessionsRef.current[0] : null);
+
+      const sesiNamaNow = targetSession?.nama_sesi || "Umum";
+
+      // 2. Instant Anti-Dobel Absen Check (In-memory Set + state)
+      const isAlreadyAttended =
+        attendedSetRef.current.has(cleanUid) ||
+        attendedSetRef.current.has(cleanUid.toLowerCase()) ||
+        attendedSetRef.current.has(namaPengguna.toLowerCase()) ||
+        records.some(
+          (r) =>
+            (r.name?.toLowerCase() === namaPengguna.toLowerCase() ||
+              r.serialNumber === cleanUid) &&
+            (r.sesiNama === sesiNamaNow || !r.sesiNama)
+        );
+
+      if (isAlreadyAttended) {
+        try {
+          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = "sawtooth";
+          osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+          gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + 0.3);
+        } catch (e) {}
+
+        if (navigator.vibrate) {
+          navigator.vibrate([150, 100, 150]);
+        }
+
+        setToastMsg({
+          type: "error",
+          text: `Peserta "${namaPengguna}" sudah presensi pada sesi ${sesiNamaNow}!`,
+        });
+
+        setDialogState({
+          isOpen: true,
+          type: "error",
+          title: "SUDAH PRESENSI",
+          message: `Peserta "${namaPengguna}" sudah melakukan presensi pada sesi "${sesiNamaNow}". Kartu tidak bisa absen 2x dalam sesi yang sama.`,
+          nama: namaPengguna,
+          serialNumber: cleanUid,
+        });
+
+        setTimeout(() => {
+          setToastMsg(null);
+        }, 2000);
+        return;
+      }
+
+      // Mark attended in-memory immediately for 0ms debounce & duplicate check
+      attendedSetRef.current.add(cleanUid);
+      attendedSetRef.current.add(cleanUid.toLowerCase());
+      attendedSetRef.current.add(namaPengguna.toLowerCase());
+
+      // 3. Instant Sound & Vibrate Feedback
       try {
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
         const osc = audioCtx.createOscillator();
@@ -766,14 +977,41 @@ export default function NFCAttendanceApp() {
         osc.connect(gain);
         gain.connect(audioCtx.destination);
         osc.start();
-        osc.stop(audioCtx.currentTime + 0.2);
+        osc.stop(audioCtx.currentTime + 0.18);
       } catch (e) {}
 
       if (navigator.vibrate) {
-        navigator.vibrate(200);
+        navigator.vibrate(150);
       }
 
-      // 2. Photo URL from database or Storage
+      // 4. Calculate Late Status in memory (Exact calculation against session)
+      let statusKehadiran = "Tepat Waktu";
+      let menitTerlambat = 0;
+      let batasJamTelat = "";
+
+      if (targetSession) {
+        const start = targetSession.jam_mulai ? targetSession.jam_mulai.slice(0, 5) : "08:00";
+        const toleransi =
+          typeof targetSession.toleransi_menit === "number"
+            ? targetSession.toleransi_menit
+            : 15;
+        batasJamTelat = targetSession.waktu_telat
+          ? targetSession.waktu_telat.slice(0, 5)
+          : calculateWaktuTelat(start, toleransi);
+
+        const now = new Date();
+        const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
+        const [bH, bM] = batasJamTelat.split(":").map(Number);
+        const batasTotalMinutes = (isNaN(bH) ? 8 : bH) * 60 + (isNaN(bM) ? 15 : bM);
+        const [stH, stM] = start.split(":").map(Number);
+        const startTotalMinutes = (isNaN(stH) ? 8 : stH) * 60 + (isNaN(stM) ? 0 : stM);
+
+        if (currentTotalMinutes > batasTotalMinutes) {
+          statusKehadiran = "Terlambat";
+          menitTerlambat = Math.max(1, currentTotalMinutes - startTotalMinutes);
+        }
+      }
+
       let photoUrl = photoUrlFound;
       if (!photoUrl) {
         const { data: publicUrlData } = supabase.storage
@@ -782,189 +1020,9 @@ export default function NFCAttendanceApp() {
         photoUrl = publicUrlData?.publicUrl || "";
       }
 
-      // 3. Determine Late Status based on Active Session & Waktu Telat
-      let statusKehadiran = "Tepat Waktu";
-      let menitTerlambat = 0;
-      let batasJamTelat = "";
-      const sesiNamaNow = activeSession?.nama_sesi || "Umum";
-
-      // 4. Anti Dobel Absen (Satu nama / kartu dilarang absen 2x dalam sesi yang sama)
-      try {
-        const [checkRw, checkKeh] = await Promise.all([
-          supabase
-            .from("riwayat_absen")
-            .select("id, nama_peserta, serial_number")
-            .eq("sesi_nama", sesiNamaNow)
-            .or(`nama_peserta.ilike.${namaPengguna},serial_number.eq.${cleanUid}`)
-            .limit(1),
-          supabase
-            .from("kehadiran")
-            .select("id, nama, serial_number")
-            .eq("sesi_nama", sesiNamaNow)
-            .or(`nama.ilike.${namaPengguna},serial_number.eq.${cleanUid}`)
-            .limit(1),
-        ]);
-
-        const hasDuplicate =
-          (checkRw.data && checkRw.data.length > 0) ||
-          (checkKeh.data && checkKeh.data.length > 0) ||
-          records.some(
-            (r) =>
-              (r.name?.toLowerCase() === namaPengguna.toLowerCase() ||
-                r.serialNumber === cleanUid) &&
-              (r.sesiNama === sesiNamaNow || !r.sesiNama)
-          );
-
-        if (hasDuplicate) {
-          // Warning tone
-          try {
-            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
-            osc.type = "sawtooth";
-            osc.frequency.setValueAtTime(300, audioCtx.currentTime);
-            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.3);
-          } catch (e) {}
-
-          if (navigator.vibrate) {
-            navigator.vibrate([150, 100, 150]);
-          }
-
-          setToastMsg({
-            type: "error",
-            text: `Peserta "${namaPengguna}" sudah presensi pada sesi ${sesiNamaNow}!`,
-          });
-
-          setDialogState({
-            isOpen: true,
-            type: "error",
-            title: "SUDAH PRESENSI",
-            message: `Peserta "${namaPengguna}" sudah melakukan presensi pada sesi "${sesiNamaNow}". Kartu tidak bisa absen 2x dalam sesi yang sama.`,
-            nama: namaPengguna,
-            serialNumber: cleanUid,
-          });
-
-          setTimeout(() => {
-            setToastMsg(null);
-          }, 4000);
-          return;
-        }
-      } catch (checkErr) {
-        console.warn("Gagal cek duplikasi presensi:", checkErr);
-      }
-
-      if (activeSession) {
-        const start = activeSession.jam_mulai ? activeSession.jam_mulai.slice(0, 5) : "08:00";
-        const toleransi = typeof activeSession.toleransi_menit === "number" ? activeSession.toleransi_menit : 15;
-        batasJamTelat = activeSession.waktu_telat
-          ? activeSession.waktu_telat.slice(0, 5)
-          : calculateWaktuTelat(start, toleransi);
-
-        const now = new Date();
-        const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
-        const [bH, bM] = batasJamTelat.split(":").map(Number);
-        const batasTotalMinutes = bH * 60 + bM;
-        const [stH, stM] = start.split(":").map(Number);
-        const startTotalMinutes = stH * 60 + stM;
-
-        if (currentTotalMinutes > batasTotalMinutes) {
-          statusKehadiran = "Terlambat";
-          menitTerlambat = Math.max(0, currentTotalMinutes - startTotalMinutes);
-        }
-      }
-
-      // 5. Save to database (Save to riwayat_absen & kehadiran)
-      try {
-        const timestampNow = new Date().toISOString();
-
-        const { error: rErr } = await supabase.from("riwayat_absen").insert([
-          {
-            serial_number: cleanUid,
-            nama_peserta: namaPengguna,
-            sesi_nama: sesiNamaNow,
-            jadwal: currentJadwal,
-            kategori: currentJadwal,
-            status: "Hadir",
-            status_kehadiran: statusKehadiran,
-            menit_terlambat: menitTerlambat,
-            waktu_telat: batasJamTelat,
-            timestamp: timestampNow,
-          },
-        ]);
-
-        if (rErr) {
-          // Retry without extra columns if not present in Supabase table
-          const { error: rErr2 } = await supabase.from("riwayat_absen").insert([
-            {
-              serial_number: cleanUid,
-              nama_peserta: namaPengguna,
-              sesi_nama: sesiNamaNow,
-              jadwal: currentJadwal,
-              kategori: currentJadwal,
-              status: "Hadir",
-              timestamp: timestampNow,
-            },
-          ]);
-          if (rErr2) {
-            await supabase.from("riwayat_absen").insert([
-              {
-                serial_number: cleanUid,
-                nama_peserta: namaPengguna,
-                sesi_nama: sesiNamaNow,
-                status: "Hadir",
-                timestamp: timestampNow,
-              },
-            ]);
-          }
-        }
-
-        const { error: kErr } = await supabase.from("kehadiran").insert([
-          {
-            serial_number: cleanUid,
-            nama: namaPengguna,
-            timestamp: timestampNow,
-            sesi_nama: sesiNamaNow,
-            jadwal: currentJadwal,
-            kategori: currentJadwal,
-            status_kehadiran: statusKehadiran,
-            menit_terlambat: menitTerlambat,
-            waktu_telat: batasJamTelat,
-          },
-        ]);
-
-        if (kErr) {
-          const { error: kErr2 } = await supabase.from("kehadiran").insert([
-            {
-              serial_number: cleanUid,
-              nama: namaPengguna,
-              timestamp: timestampNow,
-              sesi_nama: sesiNamaNow,
-              jadwal: currentJadwal,
-              kategori: currentJadwal,
-            },
-          ]);
-          if (kErr2) {
-            await supabase.from("kehadiran").insert([
-              {
-                serial_number: cleanUid,
-                nama: namaPengguna,
-                timestamp: timestampNow,
-                sesi_nama: sesiNamaNow,
-              },
-            ]);
-          }
-        }
-      } catch (dbErr) {
-        console.warn("Gagal simpan ke database presensi:", dbErr);
-      }
-
-      // Add to local live session records list
+      // 5. Instant UI Update (Zero-lag immediate response)
       const newAttendanceRecord: AttendanceRecord = {
-        id: `${Date.now()}-${Math.random()}`,
+        id: `${Date.now()}-${Math.random().toString(36).substring(7)}`,
         serialNumber: cleanUid,
         name: namaPengguna,
         sesiNama: sesiNamaNow,
@@ -974,11 +1032,12 @@ export default function NFCAttendanceApp() {
         menitTerlambat: menitTerlambat,
         photoUrl: photoUrl,
       };
+
       setRecords((prev) => [newAttendanceRecord, ...prev.slice(0, 49)]);
 
       setToastMsg({
         type: "success",
-        text: `Presensi Berhasil! ${namaPengguna}`,
+        text: `Presensi Berhasil! ${namaPengguna} (${statusKehadiran})`,
       });
 
       setDialogState({
@@ -996,14 +1055,59 @@ export default function NFCAttendanceApp() {
 
       setTimeout(() => {
         setToastMsg(null);
-      }, 4000);
+      }, 2000);
+
+      // 6. Asynchronous Non-blocking Database Write
+      let currentJadwal = targetSession?.jadwal || targetSession?.kategori || "materi";
+      if (!targetSession) {
+        if (activeTab === "jadwal_makan") currentJadwal = "makan";
+        else if (activeTab === "jadwal_sholat") currentJadwal = "sholat";
+        else currentJadwal = "materi";
+      }
+
+      const timestampNow = new Date().toISOString();
+      (async () => {
+        try {
+          await Promise.allSettled([
+            supabase.from("riwayat_absen").insert([
+              {
+                serial_number: cleanUid,
+                nama_peserta: namaPengguna,
+                sesi_nama: sesiNamaNow,
+                jadwal: currentJadwal,
+                kategori: currentJadwal,
+                status: "Hadir",
+                status_kehadiran: statusKehadiran,
+                menit_terlambat: menitTerlambat,
+                waktu_telat: batasJamTelat,
+                timestamp: timestampNow,
+              },
+            ]),
+            supabase.from("kehadiran").insert([
+              {
+                serial_number: cleanUid,
+                nama: namaPengguna,
+                timestamp: timestampNow,
+                sesi_nama: sesiNamaNow,
+                jadwal: currentJadwal,
+                kategori: currentJadwal,
+                status_kehadiran: statusKehadiran,
+                menit_terlambat: menitTerlambat,
+                waktu_telat: batasJamTelat,
+              },
+            ]),
+          ]);
+        } catch (dbErr) {
+          console.warn("Background DB sync error:", dbErr);
+        }
+      })();
     },
-    [activeSession, records]
+    [activeSession, activeTab, cacheParticipant, records]
   );
 
   // Global background listener for USB NFC / Barcode reader (Keyboard Wedge)
   useEffect(() => {
-    if (activeTab !== "presensi" || !usbModeActive || isAuthModalOpen || dialogState.isOpen) {
+    if (activeTab !== "presensi" || !usbModeActive || isAuthModalOpen) {
       return;
     }
 
@@ -1019,7 +1123,7 @@ export default function NFCAttendanceApp() {
         activeTag === "SELECT" ||
         (document.activeElement as HTMLElement)?.isContentEditable;
 
-      if (isEditable || isAuthModalOpen || dialogState.isOpen) {
+      if (isEditable || isAuthModalOpen) {
         return;
       }
 
@@ -1050,7 +1154,7 @@ export default function NFCAttendanceApp() {
     return () => {
       window.removeEventListener("keydown", handleWindowKeyDown);
     };
-  }, [activeTab, usbModeActive, isAuthModalOpen, dialogState.isOpen, processAbsenRecord]);
+  }, [activeTab, usbModeActive, isAuthModalOpen, processAbsenRecord]);
 
   const handleUsbKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -1059,7 +1163,7 @@ export default function NFCAttendanceApp() {
       if (!scannedUid) return;
 
       setUsbInputVal("");
-      await processAbsenRecord(scannedUid);
+      processAbsenRecord(scannedUid);
       focusUsbInput();
     }
   };
@@ -1715,51 +1819,117 @@ export default function NFCAttendanceApp() {
               <input
                 ref={usbInputRef}
                 type="text"
+                inputMode="none"
+                tabIndex={-1}
                 value={usbInputVal}
                 onChange={(e) => setUsbInputVal(e.target.value)}
                 onKeyDown={handleUsbKeyDown}
-                onFocus={() => setIsUsbFocused(true)}
+                onFocus={() => {
+                  if (isTouchDevice()) {
+                    usbInputRef.current?.blur();
+                  } else {
+                    setIsUsbFocused(true);
+                  }
+                }}
                 onBlur={() => setIsUsbFocused(false)}
                 className="opacity-0 absolute pointer-events-none w-1 h-1 -z-10"
                 autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 aria-hidden="true"
               />
 
-              {/* Active Session Auto Status Banner */}
+              {/* Active Session Status & Selector Banner */}
               <div className="w-full shrink-0">
                 {activeSession ? (
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-xs">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-3 h-3 rounded-full bg-emerald-500 animate-ping shrink-0" />
-                      <div>
-                        <div className="text-[10px] font-extrabold text-emerald-800 uppercase tracking-wider">
-                          Otomatis Aktif Sesi Presensi Saat Ini
-                        </div>
-                        <div className="text-sm font-bold text-emerald-950">
-                          {activeSession.nama_sesi}
-                        </div>
-                        <div className="text-xs text-emerald-700 font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span>
-                            Jam {activeSession.jam_mulai.slice(0, 5)} - {activeSession.jam_selesai.slice(0, 5)} WIB
-                          </span>
-                          {(() => {
-                            const toleransi = typeof activeSession.toleransi_menit === "number" ? activeSession.toleransi_menit : 15;
-                            const batas = activeSession.waktu_telat ? activeSession.waktu_telat.slice(0, 5) : calculateWaktuTelat(activeSession.jam_mulai.slice(0, 5), toleransi);
-                            return (
-                              <span className="inline-flex items-center gap-1 font-semibold text-amber-900 bg-amber-100/90 border border-amber-300/80 px-2 py-0.5 rounded-md text-[11px]">
-                                <Clock className="w-3 h-3 text-amber-700" />
+                  (() => {
+                    const toleransi = typeof activeSession.toleransi_menit === "number" ? activeSession.toleransi_menit : 15;
+                    const batas = activeSession.waktu_telat ? activeSession.waktu_telat.slice(0, 5) : calculateWaktuTelat(activeSession.jam_mulai.slice(0, 5), toleransi);
+                    const now = new Date();
+                    const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
+                    const [bH, bM] = batas.split(":").map(Number);
+                    const batasTotalMinutes = (isNaN(bH) ? 8 : bH) * 60 + (isNaN(bM) ? 15 : bM);
+                    const isCurrentlyLate = currentTotalMinutes > batasTotalMinutes;
+
+                    return (
+                      <div className={`p-3 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs transition-all ${
+                        isCurrentlyLate
+                          ? "bg-amber-50/90 border-amber-300"
+                          : "bg-emerald-50/90 border-emerald-200"
+                      }`}>
+                        <div className="flex items-start sm:items-center gap-2.5 flex-1 min-w-0">
+                          <div className={`w-3 h-3 rounded-full mt-1 sm:mt-0 shrink-0 ${
+                            isCurrentlyLate ? "bg-amber-500 animate-pulse" : "bg-emerald-500 animate-ping"
+                          }`} />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`text-[10px] font-extrabold uppercase tracking-wider ${
+                                isCurrentlyLate ? "text-amber-800" : "text-emerald-800"
+                              }`}>
+                                Sesi Presensi Aktif
+                              </span>
+                              {isCurrentlyLate && (
+                                <span className="text-[10px] font-black uppercase tracking-wider bg-amber-200 text-amber-950 px-2 py-0.5 rounded-md border border-amber-400 animate-pulse">
+                                  ⚠️ JAM TELAT BERLAKU
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-sm sm:text-base font-black text-slate-900 truncate">
+                              {activeSession.nama_sesi}
+                            </div>
+                            <div className="text-xs text-slate-700 font-medium flex flex-wrap items-center gap-x-2 gap-y-1 mt-0.5">
+                              <span>
+                                Jam {activeSession.jam_mulai.slice(0, 5)} - {activeSession.jam_selesai.slice(0, 5)} WIB
+                              </span>
+                              <span className={`inline-flex items-center gap-1 font-bold px-2 py-0.5 rounded-md text-[11px] border ${
+                                isCurrentlyLate
+                                  ? "text-amber-950 bg-amber-200/90 border-amber-400 font-extrabold"
+                                  : "text-slate-800 bg-white/80 border-slate-200"
+                              }`}>
+                                <Clock className="w-3 h-3 text-amber-700 shrink-0" />
                                 Batas Telat: {batas} WIB (+{toleransi}m)
                               </span>
-                            );
-                          })()}
-                          {activeSession.keterangan ? <span>• {activeSession.keterangan}</span> : null}
+                              {isCurrentlyLate ? (
+                                <span className="text-amber-800 font-bold text-[11px]">
+                                  (Tap saat ini akan dicatat Terlambat)
+                                </span>
+                              ) : (
+                                <span className="text-emerald-700 font-bold text-[11px]">
+                                  (Tap saat ini: Tepat Waktu)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Session Switcher dropdown */}
+                        <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 justify-end">
+                          {allSessions.length > 1 && (
+                            <select
+                              value={selectedManualSessionId}
+                              onChange={(e) => setSelectedManualSessionId(e.target.value)}
+                              className="text-xs font-bold py-1.5 px-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 shadow-2xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden cursor-pointer"
+                              title="Pilih sesi presensi aktif"
+                            >
+                              <option value="AUTO">🤖 Otomatis (Sesuai Waktu)</option>
+                              {allSessions.map((s) => (
+                                <option key={s.id} value={String(s.id)}>
+                                  {s.nama_sesi} ({s.jam_mulai.slice(0, 5)} - {s.jam_selesai.slice(0, 5)})
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <button
+                            onClick={() => setActiveTab("sesi")}
+                            className="px-2.5 py-1.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors shadow-2xs"
+                          >
+                            Kelola
+                          </button>
                         </div>
                       </div>
-                    </div>
-                    <span className="px-3 py-1 bg-emerald-600 text-white text-[11px] font-extrabold rounded-full shadow-2xs shrink-0">
-                      SEDANG BERLANGSUNG
-                    </span>
-                  </div>
+                    );
+                  })()
                 ) : (
                   <div className="p-3 bg-slate-100 border border-slate-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-2.5">
@@ -1769,16 +1939,32 @@ export default function NFCAttendanceApp() {
                           Status Sesi Presensi
                         </div>
                         <div className="text-xs font-bold text-slate-700">
-                          Tidak ada sesi absensi otomatis yang berlangsung saat ini
+                          Tidak ada sesi absensi yang berlangsung saat ini
                         </div>
                       </div>
                     </div>
-                    <button
-                      onClick={() => setActiveTab("sesi")}
-                      className="px-3 py-1 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition-colors shrink-0 shadow-2xs"
-                    >
-                      Kelola Sesi
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {allSessions.length > 0 && (
+                        <select
+                          value={selectedManualSessionId}
+                          onChange={(e) => setSelectedManualSessionId(e.target.value)}
+                          className="text-xs font-bold py-1.5 px-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 shadow-2xs"
+                        >
+                          <option value="AUTO">Pilih Sesi Manual...</option>
+                          {allSessions.map((s) => (
+                            <option key={s.id} value={String(s.id)}>
+                              {s.nama_sesi} ({s.jam_mulai.slice(0, 5)} - {s.jam_selesai.slice(0, 5)})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <button
+                        onClick={() => setActiveTab("sesi")}
+                        className="px-3 py-1 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition-colors shrink-0 shadow-2xs"
+                      >
+                        Kelola Sesi
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

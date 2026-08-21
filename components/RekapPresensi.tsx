@@ -403,7 +403,15 @@ export default function RekapPresensi() {
       const matchesStatus =
         !selectedStatus ||
         selectedStatus === "SEMUA" ||
-        rec.statusKehadiran === selectedStatus;
+        (selectedStatus === "Terlambat"
+          ? rec.statusKehadiran?.toLowerCase().includes("lambat") ||
+            rec.statusKehadiran?.toLowerCase().includes("telat") ||
+            Boolean(rec.menitTerlambat && rec.menitTerlambat > 0)
+          : selectedStatus === "Tepat Waktu"
+          ? !rec.statusKehadiran?.toLowerCase().includes("lambat") &&
+            !rec.statusKehadiran?.toLowerCase().includes("telat") &&
+            (!rec.menitTerlambat || rec.menitTerlambat === 0)
+          : rec.statusKehadiran === selectedStatus);
 
       return matchesSearch && matchesJadwal && matchesSesi && matchesKelompok && matchesDate && matchesStatus;
     });
@@ -995,11 +1003,14 @@ export default function RekapPresensi() {
 
                     {/* Status Pill Badge */}
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {item.statusKehadiran === "Terlambat" ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
+                      {item.statusKehadiran === "Terlambat" ||
+                      item.statusKehadiran?.toLowerCase().includes("lambat") ||
+                      item.statusKehadiran?.toLowerCase().includes("telat") ||
+                      Boolean(item.menitTerlambat && item.menitTerlambat > 0) ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-950 border border-amber-300">
                           <span>Terlambat</span>
                           {item.menitTerlambat && item.menitTerlambat > 0 ? (
-                            <span className="text-[10px] font-mono opacity-80">(+{item.menitTerlambat}m)</span>
+                            <span className="text-[10px] font-mono text-amber-800 font-semibold">(+{item.menitTerlambat}m)</span>
                           ) : null}
                         </span>
                       ) : (

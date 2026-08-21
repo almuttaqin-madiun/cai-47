@@ -76,10 +76,27 @@ export function getAllUidCandidates(input: string): string[] {
     candidates.add(stripped.toUpperCase());
   }
 
-  // Jika berupa string desimal murni (misal "2817030449" dari USB reader)
+  // Variasi angka desimal murni & penanganan awalan nol (leading zeros)
   if (/^\d+$/.test(stripped)) {
+    // Tambahkan variasi tanpa awalan nol (unpadded)
+    const unpadded = stripped.replace(/^0+/, "");
+    if (unpadded) {
+      candidates.add(unpadded);
+    }
+    // Tambahkan variasi padding standar 10-digit dan 8-digit
+    if (stripped.length < 10) {
+      candidates.add(stripped.padStart(10, "0"));
+    }
+    if (stripped.length < 8) {
+      candidates.add(stripped.padStart(8, "0"));
+    }
+
     try {
       const num = BigInt(stripped);
+      const numStr = num.toString(10);
+      candidates.add(numStr);
+      candidates.add(numStr.padStart(10, "0"));
+
       // Format hex Big-Endian
       const rawHex = num.toString(16);
       const paddedHex = rawHex.padStart(Math.ceil(rawHex.length / 2) * 2, "0");
@@ -111,6 +128,7 @@ export function getAllUidCandidates(input: string): string[] {
         try {
           const revDec = BigInt("0x" + revHex).toString();
           candidates.add(revDec);
+          candidates.add(revDec.padStart(10, "0"));
         } catch (e) {}
       }
     } catch (e) {}

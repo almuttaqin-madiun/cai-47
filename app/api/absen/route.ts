@@ -85,15 +85,32 @@ export async function POST(req: NextRequest) {
 
     // C. Fallback query tabel 'peserta' langsung
     if (!namaPengguna) {
-      const { data: fallbackData } = await supabase
-        .from("peserta")
-        .select("*")
-        .or(uidCandidates.map((u) => `nfc_uid.eq.${u},serial_number.eq.${u}`).join(","))
-        .maybeSingle();
+      const { data: allP } = await supabase.from("peserta").select("*").limit(1000);
+      if (allP && allP.length > 0) {
+        const matchedP = allP.find((p: any) => {
+          const vals = [
+            String(p.nfc_uid || "").trim(),
+            String(p.smartcard || "").trim(),
+            String(p.serial_number || "").trim(),
+            String(p.uid_nfc || "").trim(),
+          ].filter(Boolean);
 
-      if (fallbackData) {
-        namaPengguna = fallbackData.nama || fallbackData.nama_peserta || "";
-        pesertaId = fallbackData.id;
+          return vals.some((val) => {
+            const valUnpad = val.replace(/^0+/, "");
+            return uidCandidates.some((c) => {
+              const cUnpad = c.replace(/^0+/, "");
+              return (
+                c.toLowerCase() === val.toLowerCase() ||
+                (cUnpad && cUnpad === valUnpad)
+              );
+            });
+          });
+        });
+
+        if (matchedP) {
+          namaPengguna = matchedP.nama || matchedP.nama_peserta || "";
+          pesertaId = matchedP.id;
+        }
       }
     }
 
@@ -139,15 +156,57 @@ export async function POST(req: NextRequest) {
     let batasWaktuTelat = "";
 
     try {
-      const todayStr = new Date().toISOString().slice(0, 10);
-      const { data: sesiList } = await supabase
-        .from("sesi_absensi")
-        .select("*")
-        .eq("is_active", true);
+      const now = new Date();
+      const localDateStr = now.toLocaleDateString("en-CA");
+      const utcDateStr = now.toISOString().slice(0, 10);
+      const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
 
-      let matchedSesi = sesiList?.find((s: any) => s.nama_sesi === (sesi_nama || ""));
-      if (!matchedSesi && sesiList && sesiList.length > 0) {
-        matchedSesi = sesiList[0];
+      const [resJadwal, resSesi] = await Promise.all([
+        supabase.from("jadwal_absensi").select("*").eq("is_active", true),
+        supabase.from("sesi_absensi").select("*").eq("is_active", true),
+      ]);
+
+      const allSessions: any[] = [];
+      if (resJadwal.data) allSessions.push(...resJadwal.data);
+      if (resSesi.data) {
+        for (const s of resSesi.data) {
+          if (!allSessions.some((c) => c.id === s.id && c.nama_sesi === s.nama_sesi)) {
+            allSessions.push(s);
+          }
+        }
+      }
+
+      let matchedSesi: any = null;
+      if (sesi_nama) {
+        matchedSesi = allSessions.find((s) => s.nama_sesi?.toLowerCase() === sesi_nama.toLowerCase());
+      }
+
+      if (!matchedSesi && allSessions.length > 0) {
+        // Match ongoing
+        matchedSesi = allSessions.find((s) => {
+          const isToday = !s.tanggal || s.tanggal === localDateStr || s.tanggal === utcDateStr;
+          if (!isToday && s.tanggal) return false;
+          const [sh, sm] = (s.jam_mulai || "08:00").split(":").map(Number);
+          const [eh, em] = (s.jam_selesai || "23:59").split(":").map(Number);
+          const startM = (isNaN(sh) ? 8 : sh) * 60 + (isNaN(sm) ? 0 : sm);
+          const endM = (isNaN(eh) ? 23 : eh) * 60 + (isNaN(em) ? 59 : em);
+          return currentTotalMinutes >= startM && currentTotalMinutes <= endM;
+        });
+
+        // Match late window (past start time today)
+        if (!matchedSesi) {
+          matchedSesi = allSessions.find((s) => {
+            const isToday = !s.tanggal || s.tanggal === localDateStr || s.tanggal === utcDateStr;
+            if (!isToday && s.tanggal) return false;
+            const [sh, sm] = (s.jam_mulai || "08:00").split(":").map(Number);
+            const startM = (isNaN(sh) ? 8 : sh) * 60 + (isNaN(sm) ? 0 : sm);
+            return currentTotalMinutes >= startM;
+          });
+        }
+
+        if (!matchedSesi) {
+          matchedSesi = allSessions[0];
+        }
       }
 
       if (matchedSesi) {
@@ -158,22 +217,20 @@ export async function POST(req: NextRequest) {
           batasWaktuTelat = matchedSesi.waktu_telat.slice(0, 5);
         } else {
           const [sH, sM] = start.split(":").map(Number);
-          const totalM = sH * 60 + sM + toleransi;
+          const totalM = (isNaN(sH) ? 8 : sH) * 60 + (isNaN(sM) ? 0 : sM) + toleransi;
           const telatH = Math.floor(totalM / 60) % 24;
           const telatM = totalM % 60;
           batasWaktuTelat = `${String(telatH).padStart(2, "0")}:${String(telatM).padStart(2, "0")}`;
         }
 
-        const now = new Date();
-        const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
         const [bH, bM] = batasWaktuTelat.split(":").map(Number);
-        const batasTotalMinutes = bH * 60 + bM;
+        const batasTotalMinutes = (isNaN(bH) ? 8 : bH) * 60 + (isNaN(bM) ? 15 : bM);
         const [stH, stM] = start.split(":").map(Number);
-        const startTotalMinutes = stH * 60 + stM;
+        const startTotalMinutes = (isNaN(stH) ? 8 : stH) * 60 + (isNaN(stM) ? 0 : stM);
 
         if (currentTotalMinutes > batasTotalMinutes) {
           statusKehadiran = "Terlambat";
-          menitTerlambat = Math.max(0, currentTotalMinutes - startTotalMinutes);
+          menitTerlambat = Math.max(1, currentTotalMinutes - startTotalMinutes);
         }
       }
     } catch (sesiErr) {

@@ -191,81 +191,206 @@ export default function InputNFCPesertaForm() {
     setSaving(true);
     setMessage(null);
 
-    const uidClean = hexToDecimal(scannedUID.trim(), true);
-    const payload = {
+    const uidClean = hexToDecimal(scannedUID.trim(), true) || scannedUID.trim();
+    
+    // Variasi UID untuk penanganan awalan 00 (misal 0085926167 vs 85926167)
+    const uidVariations = Array.from(
+      new Set([
+        uidClean,
+        uidClean.toLowerCase(),
+        uidClean.toUpperCase(),
+        uidClean.replace(/^0+/, ""),
+        uidClean.padStart(10, "0"),
+        scannedUID.trim(),
+      ])
+    ).filter(Boolean);
+
+    const basePayload: any = {
       nfc_uid: uidClean,
       peserta_id: selectedPeserta.id,
       nama: selectedPeserta.nama,
       kelompok: selectedPeserta.kelompok || "-",
       dapukan: selectedPeserta.dapukan || "-",
       tenda: selectedPeserta.tenda || "-",
+      grup: selectedPeserta.tenda || "-",
       grup_fgd: selectedPeserta.grup_fgd || "-",
     };
 
     try {
-      // Upsert to nfc_peserta table with automatic column fallback
-      let { data, error } = await supabase
-        .from("nfc_peserta")
-        .upsert([payload], { onConflict: "nfc_uid" })
-        .select();
-
-      if (error && (error.code === "42703" || error.message?.includes("does not exist"))) {
-        // Fallback: use 'grup' instead of 'tenda'
-        const payloadGrup = {
-          nfc_uid: uidClean,
-          peserta_id: selectedPeserta.id,
-          nama: selectedPeserta.nama,
-          kelompok: selectedPeserta.kelompok || "-",
-          dapukan: selectedPeserta.dapukan || "-",
-          grup: selectedPeserta.tenda || "-",
-          grup_fgd: selectedPeserta.grup_fgd || "-",
-        };
-        const resGrup = await supabase
+      // 1. Cek apakah kartu NFC atau Peserta sudah pernah terdaftar di nfc_peserta
+      let matchedId: number | null = null;
+      try {
+        const { data: existingNfc } = await supabase
           .from("nfc_peserta")
-          .upsert([payloadGrup], { onConflict: "nfc_uid" })
-          .select();
+          .select("id, nfc_uid, peserta_id, nama")
+          .in("nfc_uid", uidVariations);
 
-        if (resGrup.error && (resGrup.error.code === "42703" || resGrup.error.message?.includes("does not exist"))) {
-          // Fallback: minimal columns (nfc_uid, peserta_id, nama, kelompok)
-          const payloadCore = {
-            nfc_uid: uidClean,
-            peserta_id: selectedPeserta.id,
-            nama: selectedPeserta.nama,
-            kelompok: selectedPeserta.kelompok || "-",
-          };
-          const resCore = await supabase
-            .from("nfc_peserta")
-            .upsert([payloadCore], { onConflict: "nfc_uid" })
-            .select();
-
-          error = resCore.error;
+        if (existingNfc && existingNfc.length > 0) {
+          matchedId = existingNfc[0].id;
         } else {
-          error = resGrup.error;
+          const { data: existingByPeserta } = await supabase
+            .from("nfc_peserta")
+            .select("id, nfc_uid, peserta_id, nama")
+            .eq("peserta_id", selectedPeserta.id);
+
+          if (existingByPeserta && existingByPeserta.length > 0) {
+            matchedId = existingByPeserta[0].id;
+          }
         }
+      } catch (checkErr) {
+        console.warn("Cek data nfc_peserta sebelumnya:", checkErr);
       }
 
-      if (error) {
-        // Check for fallback insert if upsert is rejected or unsupported
-        const { error: insertErr } = await supabase
+      // 2. Simpan ke tabel nfc_peserta (Update jika sudah ada, atau Insert jika baru)
+      let saveSuccess = false;
+
+      if (matchedId) {
+        // Mode UPDATE berdasarkan ID existing (mencegah error 23505 duplicate key)
+        const { error: updErr } = await supabase
           .from("nfc_peserta")
-          .insert([payload]);
+          .update(basePayload)
+          .eq("id", matchedId);
 
-        if (insertErr) {
-          const payloadCore = {
-            nfc_uid: uidClean,
-            peserta_id: selectedPeserta.id,
-            nama: selectedPeserta.nama,
-            kelompok: selectedPeserta.kelompok || "-",
-          };
-          const { error: insertCoreErr } = await supabase
+        if (!updErr) {
+          saveSuccess = true;
+        } else if (updErr.code === "42703" || updErr.message?.includes("does not exist")) {
+          // Fallback tanpa kolom tenda (pakai grup)
+          const payloadGrup = { ...basePayload };
+          delete payloadGrup.tenda;
+          const { error: updGrupErr } = await supabase
             .from("nfc_peserta")
-            .insert([payloadCore]);
+            .update(payloadGrup)
+            .eq("id", matchedId);
 
-          if (insertCoreErr) {
-            throw insertCoreErr;
+          if (!updGrupErr) {
+            saveSuccess = true;
+          } else {
+            // Fallback kolom minimal
+            const payloadCore = {
+              nfc_uid: uidClean,
+              peserta_id: selectedPeserta.id,
+              nama: selectedPeserta.nama,
+              kelompok: selectedPeserta.kelompok || "-",
+            };
+            const { error: updCoreErr } = await supabase
+              .from("nfc_peserta")
+              .update(payloadCore)
+              .eq("id", matchedId);
+            if (!updCoreErr) saveSuccess = true;
           }
         }
       }
+
+      if (!saveSuccess) {
+        // Coba Upsert dengan onConflict
+        let { error: upsertErr } = await supabase
+          .from("nfc_peserta")
+          .upsert([basePayload], { onConflict: "nfc_uid" });
+
+        if (!upsertErr) {
+          saveSuccess = true;
+        } else {
+          // Jika error kolom tidak ada (42703)
+          if (upsertErr.code === "42703" || upsertErr.message?.includes("does not exist")) {
+            const payloadGrup = { ...basePayload };
+            delete payloadGrup.tenda;
+            const resGrup = await supabase
+              .from("nfc_peserta")
+              .upsert([payloadGrup], { onConflict: "nfc_uid" });
+            if (!resGrup.error) {
+              saveSuccess = true;
+            } else {
+              const payloadCore = {
+                nfc_uid: uidClean,
+                peserta_id: selectedPeserta.id,
+                nama: selectedPeserta.nama,
+                kelompok: selectedPeserta.kelompok || "-",
+              };
+              const resCore = await supabase
+                .from("nfc_peserta")
+                .upsert([payloadCore], { onConflict: "nfc_uid" });
+              if (!resCore.error) saveSuccess = true;
+            }
+          }
+
+          // Jika masih belum berhasil atau kena duplicate key constraint, coba update langsung by nfc_uid
+          if (!saveSuccess) {
+            const { error: directUpdErr } = await supabase
+              .from("nfc_peserta")
+              .update(basePayload)
+              .in("nfc_uid", uidVariations);
+
+            if (!directUpdErr) {
+              saveSuccess = true;
+            } else {
+              // Terakhir coba insert murni
+              const { error: insErr } = await supabase
+                .from("nfc_peserta")
+                .insert([basePayload]);
+
+              if (!insErr) {
+                saveSuccess = true;
+              } else if (insErr.code === "23505" || insErr.message?.includes("duplicate key")) {
+                // Tangani duplicate key secara elegan dengan update by nfc_uid
+                const payloadCore = {
+                  peserta_id: selectedPeserta.id,
+                  nama: selectedPeserta.nama,
+                  kelompok: selectedPeserta.kelompok || "-",
+                  dapukan: selectedPeserta.dapukan || "-",
+                };
+                await supabase
+                  .from("nfc_peserta")
+                  .update(payloadCore)
+                  .in("nfc_uid", uidVariations);
+                saveSuccess = true;
+              } else {
+                throw insErr;
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Sinkronkan juga UID kartu ke tabel 'peserta' utama
+      try {
+        const { error: pUpdErr } = await supabase
+          .from("peserta")
+          .update({
+            nfc_uid: uidClean,
+            smartcard: uidClean,
+            uid_nfc: uidClean,
+            serial_number: uidClean,
+          })
+          .eq("id", selectedPeserta.id);
+
+        if (pUpdErr) {
+          // Fallback tanpa nfc_uid / uid_nfc jika kolom berbeda
+          await supabase
+            .from("peserta")
+            .update({ smartcard: uidClean })
+            .eq("id", selectedPeserta.id);
+        }
+      } catch (pErr) {
+        console.warn("Update smartcard ke tabel peserta:", pErr);
+      }
+
+      // 4. Update Local Storage Cache untuk offline & instant scanning
+      try {
+        if (typeof window !== "undefined") {
+          const localStr = localStorage.getItem("cai_peserta");
+          if (localStr) {
+            const list = JSON.parse(localStr);
+            if (Array.isArray(list)) {
+              const updated = list.map((item: any) =>
+                item.id === selectedPeserta.id
+                  ? { ...item, nfc_uid: uidClean, smartcard: uidClean, uid_nfc: uidClean }
+                  : item
+              );
+              localStorage.setItem("cai_peserta", JSON.stringify(updated));
+            }
+          }
+        }
+      } catch (lsErr) {}
 
       setMessage({
         type: "success",
