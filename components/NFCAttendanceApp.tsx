@@ -321,7 +321,6 @@ export default function NFCAttendanceApp() {
   // Active session state auto check & manual selector
   const [allSessions, setAllSessions] = useState<SesiAbsensi[]>([]);
   const allSessionsRef = useRef<SesiAbsensi[]>([]);
-  const [selectedManualSessionId, setSelectedManualSessionId] = useState<string>("AUTO");
   const [activeSession, setActiveSession] = useState<SesiAbsensi | null>(null);
 
   const focusUsbInput = useCallback(() => {
@@ -387,55 +386,23 @@ export default function NFCAttendanceApp() {
 
       let matched: SesiAbsensi | null = null;
 
-      // 1. If manual session is selected by operator
-      if (selectedManualSessionId && selectedManualSessionId !== "AUTO") {
-        matched = sessions.find((s) => String(s.id) === String(selectedManualSessionId)) || null;
-      }
-
-      // 2. Auto match: Ongoing session right now
-      if (!matched) {
-        matched =
-          sessions.find((s) => {
-            const isToday = !s.tanggal || s.tanggal === localDateStr || s.tanggal === utcDateStr;
-            if (!isToday && s.tanggal) return false;
-            const [sh, sm] = s.jam_mulai.split(":").map(Number);
-            const [eh, em] = s.jam_selesai.split(":").map(Number);
-            const startM = (isNaN(sh) ? 8 : sh) * 60 + (isNaN(sm) ? 0 : sm);
-            const endM = (isNaN(eh) ? 23 : eh) * 60 + (isNaN(em) ? 59 : em);
-            return currentMinutes >= startM && currentMinutes <= endM;
-          }) || null;
-      }
-
-      // 3. Auto match: Late attendance window (current time past start time today)
-      if (!matched) {
-        const pastSessions = sessions.filter((s) => {
+      // 1. Auto match: Ongoing session right now (Allow up to 60 mins early for check-in)
+      matched =
+        sessions.find((s) => {
           const isToday = !s.tanggal || s.tanggal === localDateStr || s.tanggal === utcDateStr;
           if (!isToday && s.tanggal) return false;
           const [sh, sm] = s.jam_mulai.split(":").map(Number);
+          const [eh, em] = s.jam_selesai.split(":").map(Number);
           const startM = (isNaN(sh) ? 8 : sh) * 60 + (isNaN(sm) ? 0 : sm);
-          return currentMinutes >= startM;
-        });
-        if (pastSessions.length > 0) {
-          // Sort by closest start time
-          pastSessions.sort((a, b) => {
-            const [aH, aM] = a.jam_mulai.split(":").map(Number);
-            const [bH, bM] = b.jam_mulai.split(":").map(Number);
-            return (bH * 60 + bM) - (aH * 60 + aM);
-          });
-          matched = pastSessions[0];
-        }
-      }
-
-      // 4. Fallback: Any active session marked is_active
-      if (!matched) {
-        matched = sessions.find((s) => s.is_active) || (sessions.length > 0 ? sessions[0] : null);
-      }
+          const endM = (isNaN(eh) ? 23 : eh) * 60 + (isNaN(em) ? 59 : em);
+          return currentMinutes >= (startM - 60) && currentMinutes <= endM;
+        }) || null;
 
       setActiveSession(matched || null);
     } catch (err) {
       console.error("Error checking active session:", err);
     }
-  }, [selectedManualSessionId]);
+  }, []);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -555,12 +522,12 @@ export default function NFCAttendanceApp() {
           .from("riwayat_absen")
           .select("*")
           .order("timestamp", { ascending: false })
-          .limit(100);
+          .limit(5000);
         let qKehadiran = supabase
           .from("kehadiran")
           .select("*")
           .order("timestamp", { ascending: false })
-          .limit(100);
+          .limit(5000);
 
         if (activeSession?.nama_sesi) {
           qRiwayat = qRiwayat.eq("sesi_nama", activeSession.nama_sesi);
@@ -780,7 +747,7 @@ export default function NFCAttendanceApp() {
             }
 
             // B. Jika belum ketemu, cari di tabel peserta langsung
-            const { data: allP } = await supabase.from("peserta").select("*").limit(1000);
+            const { data: allP } = await supabase.from("peserta").select("*").limit(5000);
             if (allP && allP.length > 0) {
               const matchedP = allP.find((p: any) => {
                 const vals = [
@@ -904,12 +871,21 @@ export default function NFCAttendanceApp() {
       namaPengguna = toTitleCase(namaPengguna);
 
       // Determine effective target session
-      const targetSession =
-        activeSession ||
-        allSessionsRef.current.find((s) => s.is_active) ||
-        (allSessionsRef.current.length > 0 ? allSessionsRef.current[0] : null);
+      const targetSession = activeSession;
+      
+      if (!targetSession) {
+        // Required by user: "buat absensi hanya bisa pada saat ada sesi"
+        setToastMsg({
+          type: "error",
+          text: "Tidak ada sesi presensi yang aktif. Absensi ditolak.",
+        });
+        setTimeout(() => {
+          setToastMsg(null);
+        }, 3000);
+        return;
+      }
 
-      const sesiNamaNow = targetSession?.nama_sesi || "Umum";
+      const sesiNamaNow = targetSession.nama_sesi;
 
       // 2. Instant Anti-Dobel Absen Check (In-memory Set + state)
       const isAlreadyAttended =
@@ -1076,7 +1052,7 @@ export default function NFCAttendanceApp() {
                 sesi_nama: sesiNamaNow,
                 jadwal: currentJadwal,
                 kategori: currentJadwal,
-                status: "Hadir",
+                status: statusKehadiran === "Terlambat" ? "Terlambat" : "Hadir",
                 status_kehadiran: statusKehadiran,
                 menit_terlambat: menitTerlambat,
                 waktu_telat: batasJamTelat,
@@ -1091,6 +1067,7 @@ export default function NFCAttendanceApp() {
                 sesi_nama: sesiNamaNow,
                 jadwal: currentJadwal,
                 kategori: currentJadwal,
+                status: statusKehadiran === "Terlambat" ? "Terlambat" : "Hadir",
                 status_kehadiran: statusKehadiran,
                 menit_terlambat: menitTerlambat,
                 waktu_telat: batasJamTelat,
@@ -1905,21 +1882,6 @@ export default function NFCAttendanceApp() {
 
                         {/* Session Switcher dropdown */}
                         <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 justify-end">
-                          {allSessions.length > 1 && (
-                            <select
-                              value={selectedManualSessionId}
-                              onChange={(e) => setSelectedManualSessionId(e.target.value)}
-                              className="text-xs font-bold py-1.5 px-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 shadow-2xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden cursor-pointer"
-                              title="Pilih sesi presensi aktif"
-                            >
-                              <option value="AUTO">🤖 Otomatis (Sesuai Waktu)</option>
-                              {allSessions.map((s) => (
-                                <option key={s.id} value={String(s.id)}>
-                                  {s.nama_sesi} ({s.jam_mulai.slice(0, 5)} - {s.jam_selesai.slice(0, 5)})
-                                </option>
-                              ))}
-                            </select>
-                          )}
                           <button
                             onClick={() => setActiveTab("sesi")}
                             className="px-2.5 py-1.5 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors shadow-2xs"
@@ -1944,20 +1906,6 @@ export default function NFCAttendanceApp() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {allSessions.length > 0 && (
-                        <select
-                          value={selectedManualSessionId}
-                          onChange={(e) => setSelectedManualSessionId(e.target.value)}
-                          className="text-xs font-bold py-1.5 px-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 shadow-2xs"
-                        >
-                          <option value="AUTO">Pilih Sesi Manual...</option>
-                          {allSessions.map((s) => (
-                            <option key={s.id} value={String(s.id)}>
-                              {s.nama_sesi} ({s.jam_mulai.slice(0, 5)} - {s.jam_selesai.slice(0, 5)})
-                            </option>
-                          ))}
-                        </select>
-                      )}
                       <button
                         onClick={() => setActiveTab("sesi")}
                         className="px-3 py-1 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition-colors shrink-0 shadow-2xs"

@@ -25,7 +25,7 @@ import {
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
-import { toTitleCase } from "@/lib/utils";
+import { toTitleCase, getLocalDateString, normalizeSessionName } from "@/lib/utils";
 
 interface RekapItem {
   id: string;
@@ -80,8 +80,8 @@ export default function RekapPresensi() {
     records.forEach((r) => {
       if (r.timestamp) {
         try {
-          const dStr = r.timestamp.toISOString().split("T")[0];
-          dates.add(dStr);
+          const dStr = getLocalDateString(r.timestamp);
+          if (dStr) dates.add(dStr);
         } catch (e) {
           // ignore date parse errors
         }
@@ -178,8 +178,8 @@ export default function RekapPresensi() {
       const [resPeserta, resNfc, resRiwayat, resKehadiran, resSesi] = await Promise.all([
         supabase.from("peserta").select("*"),
         supabase.from("nfc_peserta").select("*"),
-        supabase.from("riwayat_absen").select("*").order("timestamp", { ascending: false }).limit(500),
-        supabase.from("kehadiran").select("*").order("timestamp", { ascending: false }).limit(500),
+        supabase.from("riwayat_absen").select("*").order("timestamp", { ascending: false }).limit(5000),
+        supabase.from("kehadiran").select("*").order("timestamp", { ascending: false }).limit(5000),
         supabase.from("sesi_absensi").select("nama_sesi"),
       ]);
 
@@ -392,13 +392,16 @@ export default function RekapPresensi() {
         rec.grupFgd.toLowerCase().includes(term);
 
       const matchesJadwal = selectedJadwal === "SEMUA" || rec.jadwal === selectedJadwal.toLowerCase();
-      const matchesSesi = selectedSesi === "SEMUA" || rec.sesiNama === selectedSesi;
+      const matchesSesi =
+        selectedSesi === "SEMUA" ||
+        rec.sesiNama === selectedSesi ||
+        normalizeSessionName(rec.sesiNama) === normalizeSessionName(selectedSesi);
       const matchesKelompok = selectedKelompok === "SEMUA" || rec.kelompok === selectedKelompok;
 
       const matchesDate =
         !selectedTanggal ||
         selectedTanggal === "SEMUA" ||
-        rec.timestamp.toISOString().split("T")[0] === selectedTanggal;
+        getLocalDateString(rec.timestamp) === selectedTanggal;
 
       const matchesStatus =
         !selectedStatus ||

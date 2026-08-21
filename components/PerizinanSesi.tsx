@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Clock,
   Search,
@@ -28,11 +28,44 @@ import {
   Check,
   Eye,
   AlertTriangle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Radio,
+  Wifi,
+  Volume2,
+  VolumeX,
+  Smartphone,
+  Zap,
+  Sparkles,
+  ArrowRightLeft,
+  Timer,
+  CheckCheck,
+  LogOut,
+  LogIn,
+  Sliders,
+  Settings2,
+  HelpCircle,
+  Scan,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
-import { toTitleCase } from "@/lib/utils";
+import { toTitleCase, getLocalDateString, normalizeSessionName, hexToDecimal, getAllUidCandidates } from "@/lib/utils";
+
+export interface ReasonPreset {
+  id: string;
+  label: string;
+  icon: string;
+  defaultMinutes: number;
+  badgeColor: string;
+  activeBorder: string;
+}
+
+export const DEFAULT_REASON_PRESETS: ReasonPreset[] = [
+  { id: "Toilet", label: "Toilet", icon: "🚻", defaultMinutes: 15, badgeColor: "bg-blue-50 text-blue-700 border-blue-200", activeBorder: "border-[#203598] bg-blue-50/70 text-[#203598]" },
+  { id: "Kesehatan / Sakit", label: "Kesehatan / Posko", icon: "🩺", defaultMinutes: 30, badgeColor: "bg-rose-50 text-rose-700 border-rose-200", activeBorder: "border-rose-500 bg-rose-50/70 text-rose-800" },
+  { id: "Keperluan Panitia", label: "Tugas Panitia", icon: "📋", defaultMinutes: 20, badgeColor: "bg-amber-50 text-amber-700 border-amber-200", activeBorder: "border-amber-500 bg-amber-50/70 text-amber-800" },
+  { id: "Ambil Barang", label: "Ambil Barang / Tenda", icon: "🎒", defaultMinutes: 15, badgeColor: "bg-emerald-50 text-emerald-700 border-emerald-200", activeBorder: "border-emerald-500 bg-emerald-50/70 text-emerald-800" },
+  { id: "Lainnya", label: "Keperluan Lain", icon: "💡", defaultMinutes: 15, badgeColor: "bg-purple-50 text-purple-700 border-purple-200", activeBorder: "border-purple-500 bg-purple-50/70 text-purple-800" },
+];
 
 export interface PerizinanRecord {
   id: string;
@@ -91,6 +124,29 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
   // View Mode: "table" (default) or "grid"
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
 
+  // NFC Scanner & Tap State
+  const [nfcInput, setNfcInput] = useState("");
+  const [isWebNfcSupported, setIsWebNfcSupported] = useState(false);
+  const [isWebNfcScanning, setIsWebNfcScanning] = useState(false);
+  const [isProcessingNfc, setIsProcessingNfc] = useState(false);
+  const [selectedPreset, setSelectedPreset] = useState<string>("Toilet");
+  const [selectedTargetMinutes, setSelectedTargetMinutes] = useState<number>(15);
+  const [customPresetReason, setCustomPresetReason] = useState<string>("");
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [speechEnabled, setSpeechEnabled] = useState<boolean>(true);
+  const [nfcFeedback, setNfcFeedback] = useState<{
+    type: "success_leave" | "success_return" | "warning" | "info" | "error";
+    title: string;
+    subtitle: string;
+    peserta?: PesertaSimple;
+    record?: PerizinanRecord;
+    duration?: number;
+    timestamp: Date;
+  } | null>(null);
+
+  const nfcInputRef = useRef<HTMLInputElement>(null);
+  const feedbackTimeoutRef = useRef<any>(null);
+
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState("");
   const [filterSesi, setFilterSesi] = useState("SEMUA");
@@ -134,12 +190,97 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
     return () => clearInterval(timer);
   }, []);
 
+  // Check Web NFC Support on mount
+  useEffect(() => {
+    if (typeof window !== "undefined" && "NDEFReader" in window) {
+      setIsWebNfcSupported(true);
+    }
+  }, []);
+
+  // Auto-dismiss feedback toast after 5.5s
+  useEffect(() => {
+    if (nfcFeedback) {
+      if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
+      feedbackTimeoutRef.current = setTimeout(() => {
+        setNfcFeedback(null);
+      }, 5500);
+    }
+    return () => {
+      if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
+    };
+  }, [nfcFeedback]);
+
+  // Audio Synthesizer for instant audible feedback
+  const playBeep = useCallback((type: "izin_mulai" | "kembali" | "error" | "tap") => {
+    if (!soundEnabled) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+
+      if (type === "izin_mulai") {
+        // Ascending tone (440Hz -> 880Hz)
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.18, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.25);
+      } else if (type === "kembali") {
+        // Cheerful major chord (C5 523Hz -> E5 659Hz -> G5 784Hz)
+        [523.25, 659.25, 783.99].forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.08);
+          gain.gain.setValueAtTime(0.2, ctx.currentTime + idx * 0.08);
+          gain.gain.exponentialRampToValueAtTime(0.005, ctx.currentTime + idx * 0.08 + 0.3);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + idx * 0.08);
+          osc.stop(ctx.currentTime + idx * 0.08 + 0.35);
+        });
+      } else if (type === "error") {
+        // Low double buzz
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(220, ctx.currentTime);
+        osc.frequency.setValueAtTime(160, ctx.currentTime + 0.12);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+      }
+    } catch (e) {}
+  }, [soundEnabled]);
+
+  // Voice speech announcement
+  const speakNotification = useCallback((text: string) => {
+    if (!speechEnabled || typeof window === "undefined" || !window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "id-ID";
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {}
+  }, [speechEnabled]);
+
   // Compute Active Session Automatically based on current date & time
   const computeActiveSession = useCallback((sessions: SesiSimple[]): string => {
     if (!sessions || sessions.length === 0) return activeSessionName || "Sesi Umum";
 
     const now = new Date();
-    const todayStr = now.toISOString().split("T")[0];
+    const todayStr = getLocalDateString(now);
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
     // 1. Try to find session matching today and current time
@@ -167,8 +308,8 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
   }, [activeSessionName]);
 
   // Load Data
-  const loadData = useCallback(async () => {
-    setRefreshing(true);
+  const loadData = useCallback(async (silent: boolean = false) => {
+    if (!silent) setRefreshing(true);
     try {
       // 1. Fetch Peserta from multiple sources to guarantee no missing names
       const [resPeserta, resNfc, resSesi, resPerizinan] = await Promise.all([
@@ -300,6 +441,9 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
           };
         });
         setRecords(mappedRecords);
+        try {
+          localStorage.setItem("cai_perizinan_sesi", JSON.stringify(mappedRecords));
+        } catch (e) {}
       } else {
         const local = localStorage.getItem("cai_perizinan_sesi");
         if (local) {
@@ -320,12 +464,35 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
       }
     } finally {
       setLoading(false);
-      setRefreshing(false);
+      if (!silent) setRefreshing(false);
     }
   }, [computeActiveSession]);
 
+  // Real-time synchronization across all devices
   useEffect(() => {
-    loadData();
+    loadData(false);
+
+    // 1. Auto-polling interval every 3.5 seconds to guarantee multi-device live synchronization
+    const pollInterval = setInterval(() => {
+      loadData(true);
+    }, 3500);
+
+    // 2. Supabase Realtime channel subscription for instant pushes
+    const channel = supabase
+      .channel("public:perizinan_sesi_realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "perizinan_sesi" },
+        () => {
+          loadData(true);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      clearInterval(pollInterval);
+      supabase.removeChannel(channel);
+    };
   }, [loadData]);
 
   // Open Modal Create & Auto-Fill Sesi Aktif
@@ -342,9 +509,329 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
     const currentActive = autoDetectedActiveSession || computeActiveSession(sesiList);
     setFormSesiNama(currentActive);
 
-    setFormAlasan("");
-    setFormTargetDurasi("15");
+    setFormAlasan(selectedPreset === "Lainnya" && customPresetReason ? customPresetReason : selectedPreset);
+    setFormTargetDurasi(String(selectedTargetMinutes || 15));
     setIsModalOpen(true);
+  };
+
+  // Mark Participant Returned (Manual or NFC)
+  const handleMarkReturn = useCallback(
+    async (item: PerizinanRecord) => {
+      const returnTime = new Date();
+      const startTime = new Date(item.waktu_mulai);
+      const durationMinutes = Math.max(1, Math.round((returnTime.getTime() - startTime.getTime()) / (1000 * 60)));
+
+      const updatePayload: any = {
+        waktu_kembali: returnTime.toISOString(),
+        durasi_menit: durationMinutes,
+        status: "Kembali" as const,
+        updated_at: new Date().toISOString(),
+      };
+
+      // Optimistic UI update
+      const updatedRecords = records.map((r) =>
+        r.id === item.id ? { ...r, ...updatePayload } : r
+      );
+      setRecords(updatedRecords);
+      localStorage.setItem("cai_perizinan_sesi", JSON.stringify(updatedRecords));
+
+      playBeep("kembali");
+      speakNotification(`${item.nama_peserta || item.nama} sudah kembali dari izin. Total waktu ${durationMinutes} menit.`);
+
+      setNfcFeedback({
+        type: "success_return",
+        title: "✅ SUDAH KEMBALI DARI IZIN",
+        subtitle: `${item.nama_peserta || item.nama} (${item.kelompok || "-"}) telah selesai izin. Total durasi: ${durationMinutes} menit.`,
+        record: { ...item, ...updatePayload },
+        duration: durationMinutes,
+        timestamp: returnTime,
+      });
+
+      try {
+        await supabase
+          .from("perizinan_sesi")
+          .update(updatePayload)
+          .eq("id", item.id);
+      } catch (err) {
+        console.error("Error marking return:", err);
+      }
+    },
+    [records, playBeep, speakNotification]
+  );
+
+  // NFC Tap Handler: Dual Action (Tap Izin Keluar & Tap Selesai/Kembali)
+  const handleNfcTap = useCallback(
+    async (rawScannedUid: string) => {
+      if (!rawScannedUid || !rawScannedUid.trim() || isProcessingNfc) return;
+
+      setIsProcessingNfc(true);
+      const trimmedUid = rawScannedUid.trim();
+      const candidateUids = getAllUidCandidates(trimmedUid);
+      const decimalUid = hexToDecimal(trimmedUid, true) || trimmedUid;
+      if (!candidateUids.includes(decimalUid)) candidateUids.push(decimalUid);
+      if (!candidateUids.includes(trimmedUid.toLowerCase())) candidateUids.push(trimmedUid.toLowerCase());
+      if (!candidateUids.includes(trimmedUid.toUpperCase())) candidateUids.push(trimmedUid.toUpperCase());
+
+      // If Create Modal is Open: Auto select participant in modal
+      if (isModalOpen) {
+        let matchedInModal: PesertaSimple | undefined = undefined;
+        for (const p of pesertaList) {
+          const pUid = (p.nfc_uid || "").trim();
+          if (pUid) {
+            const pCandidates = getAllUidCandidates(pUid);
+            pCandidates.push(pUid);
+            pCandidates.push(hexToDecimal(pUid, true) || pUid);
+            if (candidateUids.some((c) => pCandidates.some((pc) => pc.toLowerCase() === c.toLowerCase()))) {
+              matchedInModal = p;
+              break;
+            }
+          }
+          if (candidateUids.includes(String(p.id))) {
+            matchedInModal = p;
+            break;
+          }
+        }
+
+        if (matchedInModal) {
+          setSelectedPeserta(matchedInModal);
+          setIsManualMode(false);
+          playBeep("tap");
+          setIsProcessingNfc(false);
+          return;
+        }
+      }
+
+      // 1. Search participant from registered pesertaList
+      let matchedPeserta: PesertaSimple | undefined = undefined;
+
+      for (const p of pesertaList) {
+        const pUid = (p.nfc_uid || "").trim();
+        if (pUid) {
+          const pCandidates = getAllUidCandidates(pUid);
+          pCandidates.push(pUid);
+          pCandidates.push(hexToDecimal(pUid, true) || pUid);
+
+          const isMatch = candidateUids.some((c) =>
+            pCandidates.some((pc) => pc.toLowerCase() === c.toLowerCase())
+          );
+          if (isMatch) {
+            matchedPeserta = p;
+            break;
+          }
+        }
+
+        if (candidateUids.includes(String(p.id))) {
+          matchedPeserta = p;
+          break;
+        }
+      }
+
+      if (!matchedPeserta) {
+        playBeep("error");
+        speakNotification("Kartu NFC tidak dikenali");
+        setNfcFeedback({
+          type: "error",
+          title: "⚠️ Kartu Belum Terdaftar",
+          subtitle: `UID Kartu: ${trimmedUid}. Kartu ini belum terdaftar di data peserta. Gunakan tombol Catat Izin Manual atau daftarkan kartu.`,
+          timestamp: new Date(),
+        });
+        setIsProcessingNfc(false);
+        return;
+      }
+
+      // 2. Check if participant is ALREADY on active leave ('Sedang Izin')
+      const activeLeaveRecord = records.find((r) => {
+        const isStatusActive =
+          (r.status || "").toLowerCase().includes("sedang") ||
+          (r.status || "").toLowerCase().includes("izin");
+        if (!isStatusActive) return false;
+
+        const matchName =
+          (r.nama_peserta || r.nama || "").trim().toLowerCase() ===
+          matchedPeserta!.nama.trim().toLowerCase();
+        const matchUid =
+          r.nfc_uid && candidateUids.some((c) => c.toLowerCase() === r.nfc_uid?.toLowerCase());
+        const matchId = r.peserta_id && String(r.peserta_id) === String(matchedPeserta!.id);
+
+        return matchName || matchUid || matchId;
+      });
+
+      if (activeLeaveRecord) {
+        // === ACTION A: PESERTA KEMBALI DARI IZIN (RETURN) ===
+        await handleMarkReturn(activeLeaveRecord);
+        setIsProcessingNfc(false);
+      } else {
+        // === ACTION B: PESERTA BARU MULAI IZIN (START LEAVE) ===
+        const startTime = new Date();
+        const waktuMulaiIso = startTime.toISOString();
+        const todayStr = getLocalDateString(startTime);
+        const activeSession =
+          autoDetectedActiveSession || computeActiveSession(sesiList) || "Sesi Umum";
+
+        const finalReason =
+          selectedPreset === "Lainnya" && customPresetReason.trim()
+            ? customPresetReason.trim()
+            : selectedPreset;
+        const finalTarget = Number(selectedTargetMinutes) || 15;
+
+        const payload: any = {
+          nama_peserta: matchedPeserta.nama,
+          nama: matchedPeserta.nama,
+          nfc_uid: matchedPeserta.nfc_uid || trimmedUid,
+          kelompok: matchedPeserta.kelompok || "-",
+          grup: matchedPeserta.grup || "-",
+          grup_fgd: matchedPeserta.grup || "-",
+          kategori_izin: finalReason,
+          alasan: finalReason,
+          sesi_nama: activeSession,
+          tanggal: todayStr,
+          keterangan: "",
+          waktu_mulai: waktuMulaiIso,
+          target_durasi_menit: finalTarget,
+          status: "Sedang Izin",
+          petugas: "Panitia (Tap NFC)",
+        };
+
+        if (matchedPeserta.id) {
+          payload.peserta_id = matchedPeserta.id;
+        }
+
+        // Optimistic UI update
+        const localId = "temp-" + Date.now();
+        const createdRecord: PerizinanRecord = {
+          id: localId,
+          ...payload,
+          waktu_kembali: null,
+          durasi_menit: 0,
+        };
+
+        const updatedRecords = [createdRecord, ...records];
+        setRecords(updatedRecords);
+        localStorage.setItem("cai_perizinan_sesi", JSON.stringify(updatedRecords));
+
+        playBeep("izin_mulai");
+        speakNotification(`${matchedPeserta.nama}, izin keluar dimulai. Batas waktu ${finalTarget} menit.`);
+
+        setNfcFeedback({
+          type: "success_leave",
+          title: "🚀 IZIN KELUAR DIMULAI",
+          subtitle: `${matchedPeserta.nama} (${matchedPeserta.kelompok || "-"}) • Keperluan: ${finalReason} • Target: ${finalTarget} menit.`,
+          peserta: matchedPeserta,
+          record: createdRecord,
+          timestamp: startTime,
+        });
+
+        try {
+          const { data, error } = await supabase
+            .from("perizinan_sesi")
+            .insert([payload])
+            .select()
+            .single();
+
+          if (error) {
+            delete payload.peserta_id;
+            const { data: data2 } = await supabase
+              .from("perizinan_sesi")
+              .insert([payload])
+              .select()
+              .single();
+
+            if (data2) {
+              const finalRecs = records.map((r) =>
+                r.id === localId ? { ...(data2 as PerizinanRecord), nama_peserta: matchedPeserta!.nama } : r
+              );
+              setRecords(finalRecs);
+              localStorage.setItem("cai_perizinan_sesi", JSON.stringify(finalRecs));
+            }
+          } else if (data) {
+            const finalRecs = records.map((r) =>
+              r.id === localId ? { ...(data as PerizinanRecord), nama_peserta: matchedPeserta!.nama } : r
+            );
+            setRecords(finalRecs);
+            localStorage.setItem("cai_perizinan_sesi", JSON.stringify(finalRecs));
+          }
+        } catch (err) {
+          console.error("Error inserting leave to Supabase:", err);
+        } finally {
+          setIsProcessingNfc(false);
+        }
+      }
+    },
+    [
+      isProcessingNfc,
+      isModalOpen,
+      pesertaList,
+      records,
+      autoDetectedActiveSession,
+      computeActiveSession,
+      sesiList,
+      selectedPreset,
+      customPresetReason,
+      selectedTargetMinutes,
+      playBeep,
+      speakNotification,
+      handleMarkReturn,
+    ]
+  );
+
+  // Web NFC Scanner for Android Chrome
+  const startWebNfcScan = async () => {
+    if (typeof window === "undefined" || !("NDEFReader" in window)) {
+      alert("Browser atau perangkat Anda tidak mendukung Web NFC. Silakan gunakan reader USB NFC atau input manual.");
+      return;
+    }
+
+    try {
+      setIsWebNfcScanning(true);
+      // @ts-ignore
+      const ndef = new window.NDEFReader();
+      await ndef.scan();
+
+      setNfcFeedback({
+        type: "info",
+        title: "📡 Sensor NFC HP Siap",
+        subtitle: "Tempelkan kartu peserta di bagian belakang HP (dekat kamera) untuk Izin / Kembali.",
+        timestamp: new Date(),
+      });
+
+      ndef.addEventListener("reading", (event: any) => {
+        let rawUid = event.serialNumber || "";
+        if (!rawUid && event.message?.records) {
+          for (const record of event.message.records) {
+            if (record.data) {
+              try {
+                const textDecoder = new TextDecoder(record.encoding || "utf-8");
+                const decoded = textDecoder.decode(record.data).trim();
+                if (decoded) {
+                  rawUid = decoded;
+                  break;
+                }
+              } catch (e) {}
+            }
+          }
+        }
+
+        if (rawUid) {
+          handleNfcTap(rawUid);
+          if (typeof navigator !== "undefined" && navigator.vibrate) {
+            navigator.vibrate(150);
+          }
+        }
+      });
+
+      ndef.addEventListener("readingerror", () => {
+        setNfcFeedback({
+          type: "warning",
+          title: "Tag NFC Tidak Terbaca",
+          subtitle: "Pastikan kartu menempel rapat dan tahan sejenak.",
+          timestamp: new Date(),
+        });
+      });
+    } catch (err: any) {
+      setIsWebNfcScanning(false);
+      console.error("Web NFC Error:", err);
+      alert("Gagal mengaktifkan Web NFC: " + (err.message || "Izin NFC ditolak"));
+    }
   };
 
   // Handle Submit Form - captures exact current second when button is clicked
@@ -390,7 +877,7 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
     // Timer starts EXACTLY at this click instant
     const exactStartTime = new Date();
     const waktuMulaiIso = exactStartTime.toISOString();
-    const todayStr = exactStartTime.toISOString().split("T")[0];
+    const todayStr = getLocalDateString(exactStartTime);
     const parsedTargetDuration = formTargetDurasi.trim() ? parseInt(formTargetDurasi.trim(), 10) : 15;
 
     const payload: any = {
@@ -409,8 +896,7 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
       petugas: "Panitia",
     };
 
-    const isUUID = pesertaId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pesertaId);
-    if (isUUID) {
+    if (pesertaId) {
       payload.peserta_id = pesertaId;
     }
 
@@ -468,35 +954,6 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
       setIsModalOpen(false);
     } finally {
       setSaving(false);
-    }
-  };
-
-  // Mark Participant Returned
-  const handleMarkReturn = async (item: PerizinanRecord) => {
-    const returnTime = new Date();
-    const startTime = new Date(item.waktu_mulai);
-    const durationMinutes = Math.max(1, Math.round((returnTime.getTime() - startTime.getTime()) / (1000 * 60)));
-
-    const updatePayload = {
-      waktu_kembali: returnTime.toISOString(),
-      durasi_menit: durationMinutes,
-      status: "Kembali" as const,
-    };
-
-    // Optimistic UI update
-    const updatedRecords = records.map((r) =>
-      r.id === item.id ? { ...r, ...updatePayload } : r
-    );
-    setRecords(updatedRecords);
-    localStorage.setItem("cai_perizinan_sesi", JSON.stringify(updatedRecords));
-
-    try {
-      await supabase
-        .from("perizinan_sesi")
-        .update(updatePayload)
-        .eq("id", item.id);
-    } catch (err) {
-      console.error("Error marking return:", err);
     }
   };
 
@@ -838,7 +1295,251 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
         </div>
       </div>
 
-      {/* 4. SEARCH & FILTER CONTROL BAR */}
+      {/* 4. NFC DUAL-MODE TAP SCANNER HUB (Izin Keluar & Kembali Otomatis) */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-4">
+        {/* Header NFC Hub */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#203598] text-white flex items-center justify-center shadow-xs shrink-0">
+              <Radio className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
+                  Tap NFC: Izin Keluar &amp; Kembali
+                </h3>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                  Scanner Siap
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Tempel kartu NFC untuk <strong>Izin Keluar</strong>, lalu tempel kartu yang sama lagi saat <strong>Sudah Kembali</strong>.
+              </p>
+            </div>
+          </div>
+
+          {/* Toggle Audio, Suara & Web NFC */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                soundEnabled
+                  ? "bg-slate-50 border-slate-300 text-slate-700"
+                  : "bg-slate-100 border-slate-200 text-slate-400"
+              }`}
+              title={soundEnabled ? "Nada Beep Aktif" : "Nada Beep Dimatikan"}
+            >
+              {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-[#203598]" /> : <VolumeX className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">Nada Beep</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSpeechEnabled(!speechEnabled)}
+              className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                speechEnabled
+                  ? "bg-slate-50 border-slate-300 text-slate-700"
+                  : "bg-slate-100 border-slate-200 text-slate-400"
+              }`}
+              title={speechEnabled ? "Suara Pengumuman Aktif" : "Suara Pengumuman Dimatikan"}
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${speechEnabled ? "text-amber-500" : "text-slate-400"}`} />
+              <span className="hidden sm:inline">Suara Panitia</span>
+            </button>
+
+            {isWebNfcSupported && (
+              <button
+                type="button"
+                onClick={startWebNfcScan}
+                disabled={isWebNfcScanning}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs ${
+                  isWebNfcScanning
+                    ? "bg-emerald-600 text-white"
+                    : "bg-[#203598] hover:bg-[#1a2c7d] text-white"
+                }`}
+              >
+                <Smartphone className="w-3.5 h-3.5" />
+                <span>{isWebNfcScanning ? "Sensor HP Aktif" : "Scan NFC HP"}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Preset Keperluan Cepat (Untuk Izin Baru) */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-amber-500" />
+              Pilih Keperluan Cepat (Jika baru akan keluar):
+            </span>
+            <span className="text-[11px] text-slate-500 font-medium">
+              Batas waktu: <strong>{selectedTargetMinutes} Menit</strong>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            {DEFAULT_REASON_PRESETS.map((preset) => {
+              const isSelected = selectedPreset === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPreset(preset.id);
+                    setSelectedTargetMinutes(preset.defaultMinutes);
+                  }}
+                  className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all cursor-pointer ${
+                    isSelected
+                      ? preset.activeBorder + " ring-2 ring-[#203598]/20 font-bold shadow-xs"
+                      : "bg-slate-50 border-slate-200/80 text-slate-600 hover:bg-slate-100 hover:border-slate-300"
+                  }`}
+                >
+                  <span className="text-base shrink-0">{preset.icon}</span>
+                  <div className="min-w-0">
+                    <div className="text-xs truncate">{preset.label}</div>
+                    <div className="text-[10px] text-slate-400 font-normal">
+                      {preset.defaultMinutes} menit
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* If "Lainnya" is selected: Custom reason & duration inputs */}
+          {selectedPreset === "Lainnya" && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1.5 animate-in fade-in">
+              <div className="sm:col-span-2">
+                <input
+                  type="text"
+                  placeholder="Tulis keperluan izin khusus..."
+                  value={customPresetReason}
+                  onChange={(e) => setCustomPresetReason(e.target.value)}
+                  className="w-full text-xs bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-800 placeholder:text-slate-400 focus:outline-hidden focus:bg-white focus:ring-1 focus:ring-[#203598]"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="1"
+                  max="180"
+                  value={selectedTargetMinutes}
+                  onChange={(e) => setSelectedTargetMinutes(Math.max(1, parseInt(e.target.value) || 15))}
+                  className="w-20 text-xs bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-800 font-bold focus:outline-hidden focus:bg-white"
+                />
+                <span className="text-xs text-slate-500 font-medium">Menit</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Tap Reader Input Bar */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (nfcInput.trim()) {
+              handleNfcTap(nfcInput);
+              setNfcInput("");
+            }
+          }}
+          className="relative flex items-center gap-2"
+        >
+          <div className="relative flex-1">
+            <Scan className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              ref={nfcInputRef}
+              type="text"
+              placeholder="Tempelkan kartu pada USB/HP Scanner atau ketik UID kartu..."
+              value={nfcInput}
+              onChange={(e) => setNfcInput(e.target.value)}
+              disabled={isProcessingNfc}
+              autoFocus
+              className="w-full pl-10 pr-24 py-2.5 text-xs sm:text-sm bg-slate-50 border-2 border-dashed border-slate-300 hover:border-[#203598]/50 rounded-xl text-slate-900 font-mono placeholder:font-sans placeholder:text-slate-400 focus:outline-hidden focus:border-[#203598] focus:bg-white transition-all"
+            />
+            {nfcInput && (
+              <button
+                type="button"
+                onClick={() => setNfcInput("")}
+                className="absolute right-12 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+              >
+                ✕
+              </button>
+            )}
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none hidden sm:block">
+              Auto Enter ↵
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={!nfcInput.trim() || isProcessingNfc}
+            className="px-4 py-2.5 bg-[#203598] hover:bg-[#1a2c7d] disabled:opacity-50 disabled:pointer-events-none text-white text-xs font-bold rounded-xl shadow-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+          >
+            {isProcessingNfc ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <ArrowRightLeft className="w-4 h-4" />
+            )}
+            <span>Proses Tap</span>
+          </button>
+        </form>
+
+        {/* Live Tap Feedback Notification Banner */}
+        {nfcFeedback && (
+          <div
+            className={`p-3.5 rounded-xl border flex items-start justify-between gap-3 animate-in fade-in zoom-in duration-200 ${
+              nfcFeedback.type === "success_leave"
+                ? "bg-blue-50/80 border-blue-200 text-blue-900"
+                : nfcFeedback.type === "success_return"
+                ? "bg-emerald-50/80 border-emerald-200 text-emerald-900"
+                : nfcFeedback.type === "error"
+                ? "bg-rose-50/80 border-rose-200 text-rose-900"
+                : "bg-amber-50/80 border-amber-200 text-amber-900"
+            }`}
+          >
+            <div className="flex items-start gap-3 min-w-0">
+              <div className="mt-0.5 shrink-0">
+                {nfcFeedback.type === "success_leave" ? (
+                  <div className="w-7 h-7 rounded-lg bg-[#203598] text-white flex items-center justify-center">
+                    <LogOut className="w-4 h-4" />
+                  </div>
+                ) : nfcFeedback.type === "success_return" ? (
+                  <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center">
+                    <CheckCheck className="w-4 h-4" />
+                  </div>
+                ) : (
+                  <div className="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center">
+                    <AlertTriangle className="w-4 h-4" />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0">
+                <div className="font-extrabold text-xs sm:text-sm tracking-tight flex items-center gap-2">
+                  <span>{nfcFeedback.title}</span>
+                  <span className="text-[10px] font-normal opacity-70">
+                    {formatTime(nfcFeedback.timestamp.toISOString())}
+                  </span>
+                </div>
+                <div className="text-xs mt-0.5 opacity-90 leading-relaxed break-words">
+                  {nfcFeedback.subtitle}
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setNfcFeedback(null)}
+              className="p-1 rounded-md hover:bg-black/5 opacity-60 hover:opacity-100 transition-opacity cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 5. SEARCH & FILTER CONTROL BAR */}
       <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           {/* Search Box */}
@@ -1563,8 +2264,12 @@ export default function PerizinanSesi({ activeSessionName }: PerizinanSesiProps)
                             ))
                           )}
                         </div>
-                        <div className="text-[10px] text-slate-400 px-1">
-                          * Klik nama peserta dari daftar di atas
+                        <div className="text-[10px] text-slate-400 px-1 flex items-center justify-between">
+                          <span>* Klik nama peserta di atas atau tempelkan kartu NFC untuk memilih</span>
+                          <span className="text-[10px] font-semibold text-[#203598] flex items-center gap-1">
+                            <Radio className="w-3 h-3 animate-pulse" />
+                            NFC Ready
+                          </span>
                         </div>
                       </div>
                     )}

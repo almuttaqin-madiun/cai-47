@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS public.riwayat_absen (
     jadwal TEXT DEFAULT 'materi',
     kategori TEXT DEFAULT 'materi',
     status TEXT DEFAULT 'Hadir',                   -- 'Hadir', 'Izin', 'Sakit', 'Terlambat'
+    status_kehadiran TEXT DEFAULT 'Tepat Waktu',
+    menit_terlambat INT DEFAULT 0,
+    waktu_telat TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -91,6 +94,9 @@ CREATE TABLE IF NOT EXISTS public.kehadiran (
     jadwal TEXT DEFAULT 'materi',
     kategori TEXT DEFAULT 'materi',
     status TEXT DEFAULT 'Hadir',
+    status_kehadiran TEXT DEFAULT 'Tepat Waktu',
+    menit_terlambat INT DEFAULT 0,
+    waktu_telat TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -242,6 +248,33 @@ ALTER TABLE public.plotting_fgd ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tenda ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.grup_fgd ENABLE ROW LEVEL SECURITY;
 
+CREATE TABLE IF NOT EXISTS public.perizinan_sesi (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    peserta_id BIGINT REFERENCES public.peserta(id) ON DELETE CASCADE,
+    nama_peserta TEXT NOT NULL,
+    nama TEXT,
+    nfc_uid TEXT,
+    kelompok TEXT,
+    grup TEXT,
+    grup_fgd TEXT,
+    kategori_izin TEXT,
+    sesi_id UUID,
+    sesi_nama TEXT NOT NULL,
+    tanggal DATE NOT NULL,
+    alasan TEXT NOT NULL,
+    keterangan TEXT,
+    waktu_mulai TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    waktu_kembali TIMESTAMPTZ,
+    durasi_menit INT,
+    target_durasi_menit INT,
+    status TEXT NOT NULL,
+    petugas TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.perizinan_sesi ENABLE ROW LEVEL SECURITY;
+
 DROP POLICY IF EXISTS "Allow full access peserta" ON public.peserta;
 CREATE POLICY "Allow full access peserta" ON public.peserta FOR ALL USING (true) WITH CHECK (true);
 
@@ -274,3 +307,6 @@ CREATE POLICY "Allow full access tenda" ON public.tenda FOR ALL USING (true) WIT
 
 DROP POLICY IF EXISTS "Allow full access grup_fgd" ON public.grup_fgd;
 CREATE POLICY "Allow full access grup_fgd" ON public.grup_fgd FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access perizinan_sesi" ON public.perizinan_sesi;
+CREATE POLICY "Allow full access perizinan_sesi" ON public.perizinan_sesi FOR ALL USING (true) WITH CHECK (true);

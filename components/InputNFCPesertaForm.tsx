@@ -212,7 +212,6 @@ export default function InputNFCPesertaForm() {
       kelompok: selectedPeserta.kelompok || "-",
       dapukan: selectedPeserta.dapukan || "-",
       tenda: selectedPeserta.tenda || "-",
-      grup: selectedPeserta.tenda || "-",
       grup_fgd: selectedPeserta.grup_fgd || "-",
     };
 

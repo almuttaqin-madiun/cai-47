@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
-import { toTitleCase } from "@/lib/utils";
+import { toTitleCase, getLocalDateString } from "@/lib/utils";
 
 export interface SesiAbsensi {
   id: number;
@@ -167,8 +167,7 @@ export default function ManajemenSesi({ kategori = "materi" }: ManajemenSesiProp
   const [isDeleting, setIsDeleting] = useState(false);
 
   const getTodayString = () => {
-    const today = new Date();
-    return today.toISOString().split("T")[0];
+    return getLocalDateString(new Date());
   };
 
   const [formNamaSesi, setFormNamaSesi] = useState("");

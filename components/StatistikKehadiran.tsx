@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { exportDataToExcel } from "@/lib/excelExport";
-import { hexToDecimal, toTitleCase } from "@/lib/utils";
+import { hexToDecimal, toTitleCase, getLocalDateString, normalizeSessionName } from "@/lib/utils";
 import { SesiAbsensi } from "./ManajemenSesi";
 
 interface Peserta {
@@ -762,7 +762,8 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
 
         const name = rawName ? toTitleCase(rawName) : "Peserta NFC";
         const sesi = rawSesi ? toTitleCase(rawSesi) : "Umum";
-        const key = `${uid}_${sesi}_${item.timestamp ? new Date(item.timestamp).toISOString().split("T")[0] : ""}`;
+        const itemDate = getLocalDateString(item.timestamp);
+        const key = item.id ? `id_${item.id}` : `${uid || name}_${normalizeSessionName(sesi)}_${itemDate}`;
 
         if (!seenMap.has(key)) {
           seenMap.add(key);
@@ -830,12 +831,12 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
     attendanceRecords.forEach((a) => {
       if (a.timestamp) {
         try {
-          const dStr = new Date(a.timestamp).toISOString().split("T")[0];
-          dSet.add(dStr);
+          const dStr = getLocalDateString(a.timestamp);
+          if (dStr) dSet.add(dStr);
         } catch (e) {}
       }
     });
-    return Array.from(dSet).sort();
+    return Array.from(dSet).sort().reverse();
   }, [sessionList, attendanceRecords]);
 
   const distinctKelompok = useMemo(() => {
@@ -848,7 +849,7 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
   const sessionStats = useMemo<SessionAttendanceStat[]>(() => {
     const statsMap = new Map<string, SessionAttendanceStat>();
     const now = new Date();
-    const todayStr = now.toISOString().split("T")[0];
+    const todayStr = getLocalDateString(now);
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
     // 1. Initialize from registered sessions in jadwal / sesi
@@ -891,20 +892,35 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
 
     // 2. Also register any sessions found from attendance records if not already in list
     attendanceRecords.forEach((a) => {
-      const aDate = a.timestamp ? new Date(a.timestamp).toISOString().split("T")[0] : todayStr;
-      const sKey = `${a.sesi_nama || "Umum"}__${aDate}`;
-      if (!statsMap.has(sKey)) {
+      const aDate = getLocalDateString(a.timestamp) || todayStr;
+      const rawSesiNama = a.sesi_nama || "Umum";
+      const normSesi = normalizeSessionName(rawSesiNama);
+
+      // Check if this attendance matches any existing registered session by normalized name & date
+      let matchedKey = "";
+      for (const [key, stat] of statsMap.entries()) {
+        if (
+          normalizeSessionName(stat.sessionName) === normSesi &&
+          (!stat.tanggal || stat.tanggal === aDate)
+        ) {
+          matchedKey = key;
+          break;
+        }
+      }
+
+      if (!matchedKey) {
         let detectedKategori = a.kategori || a.jadwal || "materi";
-        const lower = (a.sesi_nama || "").toLowerCase();
+        const lower = rawSesiNama.toLowerCase();
         if (lower.includes("makan") || lower.includes("sarapan") || lower.includes("konsumsi")) {
           detectedKategori = "makan";
         } else if (lower.includes("sholat") || lower.includes("subuh") || lower.includes("dzuhur") || lower.includes("ashar") || lower.includes("maghrib") || lower.includes("isya")) {
           detectedKategori = "sholat";
         }
 
-        statsMap.set(sKey, {
-          sessionKey: sKey,
-          sessionName: a.sesi_nama || "Umum",
+        const newKey = `${rawSesiNama}__${aDate}`;
+        statsMap.set(newKey, {
+          sessionKey: newKey,
+          sessionName: rawSesiNama,
           kategori: detectedKategori,
           tanggal: aDate,
           totalPeserta: totalRegisteredPeserta,
@@ -926,9 +942,37 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
 
     // 3. Aggregate presence for each session
     attendanceRecords.forEach((a) => {
-      const aDate = a.timestamp ? new Date(a.timestamp).toISOString().split("T")[0] : todayStr;
-      const sKey = `${a.sesi_nama || "Umum"}__${aDate}`;
-      const stat = statsMap.get(sKey);
+      const aDate = getLocalDateString(a.timestamp) || todayStr;
+      const rawSesiNama = a.sesi_nama || "Umum";
+      const normSesi = normalizeSessionName(rawSesiNama);
+
+      // Find matched stat
+      let stat: SessionAttendanceStat | undefined = undefined;
+      const directKey = `${rawSesiNama}__${aDate}`;
+      stat = statsMap.get(directKey);
+
+      if (!stat) {
+        for (const s of statsMap.values()) {
+          if (
+            normalizeSessionName(s.sessionName) === normSesi &&
+            (!s.tanggal || s.tanggal === aDate)
+          ) {
+            stat = s;
+            break;
+          }
+        }
+      }
+
+      // Fallback: match by normalized name across any date if session unique
+      if (!stat) {
+        for (const s of statsMap.values()) {
+          if (normalizeSessionName(s.sessionName) === normSesi) {
+            stat = s;
+            break;
+          }
+        }
+      }
+
       if (!stat) return;
 
       const uid = (a.serial_number || "").trim();
@@ -1022,7 +1066,8 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
   useEffect(() => {
     if (sessionStats.length > 0 && !selectedSessionKey) {
       if (defaultSessionName) {
-        const matched = sessionStats.find((s) => s.sessionName.toLowerCase() === defaultSessionName.toLowerCase());
+        const normDef = normalizeSessionName(defaultSessionName);
+        const matched = sessionStats.find((s) => normalizeSessionName(s.sessionName) === normDef);
         if (matched) {
           setSelectedSessionKey(matched.sessionKey);
           return;
@@ -1051,6 +1096,7 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
 
     const hadirSetUids = currentSelectedStat.hadirUids;
     const hadirSetNames = currentSelectedStat.hadirNames;
+    const normSelectedSesi = normalizeSessionName(currentSelectedStat.sessionName);
 
     const hadirList: Array<{
       peserta: Peserta;
@@ -1080,10 +1126,11 @@ export default function StatistikKehadiran({ embedded = false, defaultSessionNam
         const matchedRec = attendanceRecords.find((a) => {
           const aUid = a.serial_number ? hexToDecimal(a.serial_number, true) : "";
           const aNameLower = (a.nama_peserta || a.nama || "").trim().toLowerCase();
-          const aDate = a.timestamp ? new Date(a.timestamp).toISOString().split("T")[0] : "";
+          const aDate = getLocalDateString(a.timestamp);
+          const aNormSesi = normalizeSessionName(a.sesi_nama);
           return (
             ((cleanUid && aUid === cleanUid) || (pNameLower && aNameLower === pNameLower)) &&
-            (a.sesi_nama === currentSelectedStat.sessionName &&
+            (aNormSesi === normSelectedSesi &&
               (!currentSelectedStat.tanggal || aDate === currentSelectedStat.tanggal))
           );
         });

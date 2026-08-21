@@ -204,3 +204,41 @@ export function getAllUidCandidates(input: string): string[] {
   return Array.from(candidates).filter(Boolean);
 }
 
+/**
+ * Mengambil tanggal lokal (YYYY-MM-DD) sesuai zona waktu lokal pengguna (WIB/WITA/WIT),
+ * bukan UTC yang dapat bergeser ke hari kemarin saat absensi pagi (00:00 - 06:59 WIB).
+ */
+export function getLocalDateString(dateInput?: Date | string | number | null): string {
+  if (!dateInput) {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  const d = typeof dateInput === "object" ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }
+
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Menormalkan nama sesi absensi untuk perbandingan yang konsisten
+ * Contoh: "Sesi Materi 1", "materi 1", "Materi 1 " -> "materi 1"
+ */
+export function normalizeSessionName(name?: string | null): string {
+  if (!name) return "umum";
+  return String(name)
+    .toLowerCase()
+    .trim()
+    .replace(/^sesi\s+/i, "")
+    .replace(/\s+/g, " ");
+}
+
