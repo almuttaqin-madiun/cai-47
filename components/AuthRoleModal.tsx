@@ -23,6 +23,7 @@ import { supabase } from "@/lib/supabase";
 
 export type RoleType =
   | "kesekertariatan"
+  | "kesekretariatan"
   | "acara"
   | "operator"
   | "steering committee"
@@ -32,7 +33,7 @@ export type RoleType =
 export interface UserSession {
   id?: string | number;
   nama_lengkap: string;
-  role: RoleType;
+  role: RoleType | string;
   role_label: string;
   login_at: string;
 }
@@ -47,9 +48,49 @@ export interface RoleConfig {
   bgPattern: string;
 }
 
+export function normalizeRoleKey(roleStr: string): string {
+  const clean = String(roleStr || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+
+  if (clean.includes("sekretar") || clean.includes("sekertar") || clean.includes("admin")) {
+    return "kesekretariatan";
+  }
+  if (clean.includes("acara")) {
+    return "acara";
+  }
+  if (clean.includes("operator") || clean.includes("scanner") || clean.includes("scan")) {
+    return "operator";
+  }
+  if (clean.includes("steering") || clean === "sc") {
+    return "steering committee";
+  }
+  if (clean.includes("organizing") || clean === "oc" || clean.includes("pelaksana")) {
+    return "organizing committee";
+  }
+  if (clean.includes("fasil")) {
+    return "fasilitator";
+  }
+  return clean;
+}
+
+export function isRoleMatching(roleA: string, roleB: string): boolean {
+  const normA = normalizeRoleKey(roleA);
+  const normB = normalizeRoleKey(roleB);
+  if (!normA || !normB) return false;
+  return (
+    normA === normB ||
+    normA.includes(normB) ||
+    normB.includes(normA) ||
+    (normA.includes("sekretar") && normB.includes("sekretar")) ||
+    (normA.includes("sekertar") && normB.includes("sekertar"))
+  );
+}
+
 export const ROLES_CONFIG: RoleConfig[] = [
   {
-    id: "kesekertariatan",
+    id: "kesekretariatan",
     title: "Kesekretariatan",
     subtitle: "Akses penuh master data peserta, registrasi NFC, plotting, jadwal, perizinan & rekapitulasi",
     badge: "Master Akses",
@@ -151,28 +192,63 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
     setErrorMessage(null);
 
     try {
-      // 1. Check in Supabase table 'pengguna' (case-insensitive query)
-      const { data, error } = await supabase
-        .from("pengguna")
-        .select("*")
-        .ilike("nama_lengkap", cleanInputName);
+      // 1. Check in Supabase table 'pengguna'
+      let matchingUsers: any[] = [];
+      try {
+        // Query by nama_lengkap or username
+        const { data: resByName, error: errByName } = await supabase
+          .from("pengguna")
+          .select("*")
+          .ilike("nama_lengkap", cleanInputName);
+
+        if (!errByName && resByName && resByName.length > 0) {
+          matchingUsers = resByName;
+        } else {
+          // Try by username column if available
+          try {
+            const { data: resByUsername, error: errByUsername } = await supabase
+              .from("pengguna")
+              .select("*")
+              .ilike("username", cleanInputName);
+            if (!errByUsername && resByUsername && resByUsername.length > 0) {
+              matchingUsers = resByUsername;
+            }
+          } catch (errU) {}
+        }
+      } catch (e) {}
+
+      // If ilike didn't find exact case/character, query all and match trimmed/case-insensitive
+      if (matchingUsers.length === 0) {
+        try {
+          const { data: allUsers } = await supabase.from("pengguna").select("*");
+          if (allUsers && allUsers.length > 0) {
+            const cleanTarget = cleanInputName.toLowerCase().replace(/\s+/g, " ");
+            matchingUsers = allUsers.filter((u: any) => {
+              const n1 = String(u.nama_lengkap || "").toLowerCase().replace(/\s+/g, " ").trim();
+              const n2 = String(u.username || "").toLowerCase().replace(/\s+/g, " ").trim();
+              const n3 = String(u.nama || "").toLowerCase().replace(/\s+/g, " ").trim();
+              return n1 === cleanTarget || n2 === cleanTarget || n3 === cleanTarget;
+            });
+          }
+        } catch (e) {}
+      }
 
       let authenticatedUser: any = null;
 
-      if (!error && data && data.length > 0) {
-        // Find user with matching role (case-insensitive)
-        const matchRole = data.find(
-          (u: any) =>
-            String(u.role || "").trim().toLowerCase() === selectedRole.id.toLowerCase()
+      if (matchingUsers && matchingUsers.length > 0) {
+        // Find user with matching role (normalized and typo-tolerant)
+        const matchRole = matchingUsers.find((u: any) =>
+          isRoleMatching(String(u.role || ""), selectedRole.id) ||
+          isRoleMatching(String(u.role || ""), selectedRole.title)
         );
 
         if (matchRole) {
           authenticatedUser = matchRole;
         } else {
           // User exists in database but under a different role
-          const actualRole = data[0].role || "-";
-          const matchedCfg = ROLES_CONFIG.find(
-            (r) => r.id.toLowerCase() === actualRole.toLowerCase()
+          const actualRole = matchingUsers[0].role || "-";
+          const matchedCfg = ROLES_CONFIG.find((r) =>
+            isRoleMatching(r.id, actualRole) || isRoleMatching(r.title, actualRole)
           );
           const roleDisplay = matchedCfg ? matchedCfg.title : actualRole;
 
@@ -189,13 +265,13 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
       if (!authenticatedUser) {
         const isDefaultAngie =
           cleanInputName.toLowerCase() === "angie seprisa pamungkas" &&
-          selectedRole.id === "kesekertariatan";
+          (selectedRole.id === "kesekretariatan" || selectedRole.id === "kesekertariatan");
 
         if (isDefaultAngie) {
           authenticatedUser = {
             id: 1,
             nama_lengkap: "Angie Seprisa Pamungkas",
-            role: "kesekertariatan",
+            role: "kesekretariatan",
             status: "aktif",
           };
         }
@@ -207,11 +283,13 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
         if (localUsersStr) {
           try {
             const localUsers = JSON.parse(localUsersStr);
-            const foundLocal = localUsers.find(
-              (u: any) =>
-                u.nama_lengkap.trim().toLowerCase() === cleanInputName.toLowerCase() &&
-                u.role.trim().toLowerCase() === selectedRole.id.toLowerCase()
-            );
+            const foundLocal = localUsers.find((u: any) => {
+              const uName = String(u.nama_lengkap || u.username || "").trim().toLowerCase();
+              return (
+                uName === cleanInputName.toLowerCase() &&
+                (isRoleMatching(u.role, selectedRole.id) || isRoleMatching(u.role, selectedRole.title))
+              );
+            });
             if (foundLocal) {
               authenticatedUser = foundLocal;
             }
@@ -223,7 +301,7 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
       if (authenticatedUser) {
         const userSession: UserSession = {
           id: authenticatedUser.id || Date.now(),
-          nama_lengkap: authenticatedUser.nama_lengkap || cleanInputName,
+          nama_lengkap: authenticatedUser.nama_lengkap || authenticatedUser.username || cleanInputName,
           role: selectedRole.id,
           role_label: selectedRole.title,
           login_at: new Date().toISOString(),
@@ -243,12 +321,12 @@ export default function AuthRoleModal({ isOpen, onLoginSuccess }: AuthRoleModalP
       // Offline / Connection fallback for Angie Seprisa Pamungkas
       if (
         cleanInputName.toLowerCase() === "angie seprisa pamungkas" &&
-        selectedRole.id === "kesekertariatan"
+        (selectedRole.id === "kesekretariatan" || selectedRole.id === "kesekertariatan")
       ) {
         const userSession: UserSession = {
           id: 1,
           nama_lengkap: "Angie Seprisa Pamungkas",
-          role: "kesekertariatan",
+          role: "kesekretariatan",
           role_label: "Kesekretariatan",
           login_at: new Date().toISOString(),
         };

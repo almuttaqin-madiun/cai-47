@@ -43,7 +43,7 @@ import SuccessDialog from "./SuccessDialog";
 import PlottingPeserta from "./PlottingPeserta";
 import StatistikKehadiran from "./StatistikKehadiran";
 import PerizinanSesi from "./PerizinanSesi";
-import AuthRoleModal, { UserSession, RoleType } from "./AuthRoleModal";
+import AuthRoleModal, { UserSession, RoleType, normalizeRoleKey } from "./AuthRoleModal";
 
 interface AttendanceRecord {
   id: string;
@@ -58,6 +58,22 @@ interface AttendanceRecord {
 
 // Role-to-Tabs Permissions Matrix
 const ROLE_ALLOWED_TABS: Record<string, string[]> = {
+  kesekretariatan: [
+    "presensi",
+    "presensi_grafik",
+    "presensi_izin",
+    "peserta",
+    "input",
+    "nfc",
+    "plotting_tenda",
+    "plotting_fgd",
+    "jadwal_materi",
+    "jadwal_makan",
+    "jadwal_sholat",
+    "rekap_presensi",
+    "sesi",
+    "statistik",
+  ],
   kesekertariatan: [
     "presensi",
     "presensi_grafik",
@@ -183,11 +199,11 @@ export default function NFCAttendanceApp() {
     if (savedUserStr) {
       try {
         const parsed = JSON.parse(savedUserStr);
-        if (parsed && parsed.role && parsed.nama_lengkap) {
+        if (parsed && (parsed.role || parsed.nama_lengkap)) {
           setCurrentUser(parsed);
           // Ensure activeTab is allowed for this role
-          const roleKey = String(parsed.role).toLowerCase();
-          const allowed = ROLE_ALLOWED_TABS[roleKey] || [];
+          const roleKey = normalizeRoleKey(parsed.role);
+          const allowed = ROLE_ALLOWED_TABS[roleKey] || ROLE_ALLOWED_TABS[String(parsed.role).toLowerCase()] || [];
           if (allowed.length > 0 && !allowed.includes(activeTab)) {
             setActiveTab(allowed[0] as any);
           }
@@ -203,8 +219,8 @@ export default function NFCAttendanceApp() {
     setCurrentUser(user);
     setIsAuthModalOpen(false);
 
-    const roleKey = String(user.role).toLowerCase();
-    const allowed = ROLE_ALLOWED_TABS[roleKey] || [];
+    const roleKey = normalizeRoleKey(user.role);
+    const allowed = ROLE_ALLOWED_TABS[roleKey] || ROLE_ALLOWED_TABS[String(user.role).toLowerCase()] || [];
     if (allowed.length > 0 && !allowed.includes(activeTab)) {
       setActiveTab(allowed[0] as any);
     }
@@ -218,8 +234,8 @@ export default function NFCAttendanceApp() {
 
   const isTabAllowed = (tabKey: string): boolean => {
     if (!currentUser) return true; // default before auth
-    const roleKey = String(currentUser.role).toLowerCase();
-    const allowed = ROLE_ALLOWED_TABS[roleKey];
+    const roleKey = normalizeRoleKey(currentUser.role);
+    const allowed = ROLE_ALLOWED_TABS[roleKey] || ROLE_ALLOWED_TABS[String(currentUser.role).toLowerCase()];
     if (!allowed) return true;
     return allowed.includes(tabKey);
   };
@@ -1701,49 +1717,39 @@ export default function NFCAttendanceApp() {
                   {/* Scan Card Container */}
                   <div
                     onClick={focusUsbInput}
-                    className="bg-white rounded-xl border border-slate-200 shadow-md overflow-hidden flex flex-col cursor-pointer hover:border-blue-300 transition-colors"
+                    className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col cursor-pointer hover:border-blue-300 transition-colors"
                   >
-                    <div className="bg-slate-50 p-2.5 border-b border-slate-100 flex items-center justify-between shrink-0">
-                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                        <Usb className="w-3.5 h-3.5 text-[#203598]" />
-                        Area Pemindaian Kartu NFC
-                      </span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        isUsbFocused ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
-                      }`}>
-                        {isUsbFocused ? "● Ready Tap USB" : "Klik untuk Fokus"}
-                      </span>
-                    </div>
-
-                    <div className="flex flex-col items-center justify-center p-4 text-center">
-                      <div className="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center relative mb-3">
+                    <div className="flex flex-col items-center justify-center p-5 sm:p-6 text-center">
+                      {/* Top Circular Contactless / NFC Badge */}
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 bg-[#eef3f8] rounded-full flex items-center justify-center relative mb-5 transition-transform hover:scale-105">
                         {isScanning && (
                           <>
-                            <div className="absolute inset-0 border-4 border-[#203598] opacity-10 rounded-full scale-110 animate-ping"></div>
-                            <div className="absolute inset-0 border-2 border-[#203598] opacity-20 rounded-full scale-125 animate-pulse"></div>
+                            <div className="absolute inset-0 border-4 border-[#203598] opacity-20 rounded-full scale-110 animate-ping"></div>
+                            <div className="absolute inset-0 border-2 border-[#203598] opacity-30 rounded-full scale-125 animate-pulse"></div>
                           </>
                         )}
-                        <Nfc
-                          size={48}
-                          className={`transition-colors duration-300 ${
-                            isScanning ? "text-[#203598]" : "text-slate-400"
+                        {/* Contactless Signal Wave Icon */}
+                        <svg
+                          className={`w-8 h-8 sm:w-9 sm:h-9 transition-colors duration-300 ${
+                            isScanning ? "text-[#203598]" : "text-slate-600"
                           }`}
-                        />
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.6"
+                          strokeLinecap="round"
+                        >
+                          <path d="M8.5 14.5a2.5 2.5 0 0 0 0-5" />
+                          <path d="M12 17.5a6 6 0 0 0 0-11" />
+                          <path d="M15.5 20.5a10 10 0 0 0 0-17" />
+                          <path d="M19 23a14 14 0 0 0 0-22" />
+                        </svg>
                       </div>
 
-                      <h2 className="text-lg font-bold text-slate-900 mb-0.5">
-                        {isScanning ? "Sensor Android Aktif" : "Silakan Tap Kartu NFC"}
-                      </h2>
-                      <p className="text-slate-500 text-[11px] mb-3 max-w-[260px] leading-relaxed">
-                        {isScanning
-                          ? "Dekatkan kartu NFC ke bagian belakang HP Android Anda sekarang..."
-                          : "Tempelkan kartu NFC ke modul USB Reader atau gunakan HP Android Anda."}
-                      </p>
-
                       {/* Prominent Android Web NFC Scan Buttons */}
-                      <div className="w-full space-y-2 mb-2">
+                      <div className="w-full space-y-2.5">
                         {isInsideIframe && (
-                          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex flex-col gap-1.5 text-left">
+                          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex flex-col gap-1.5 text-left mb-1">
                             <div className="flex items-center gap-1.5 font-bold text-amber-800">
                               <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
                               <span>Buka di Tab Baru untuk NFC HP</span>
@@ -1770,22 +1776,20 @@ export default function NFCAttendanceApp() {
                               e.stopPropagation();
                               handleScan();
                             }}
-                            className="w-full bg-[#203598] hover:bg-[#182a7a] active:bg-[#121f5c] text-white font-bold py-2.5 px-4 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 text-xs sm:text-sm active:scale-98 cursor-pointer group"
+                            className="w-full bg-[#1b3280] hover:bg-[#152766] active:bg-[#0f1c48] text-white font-bold py-3.5 px-5 rounded-2xl shadow-sm transition-all flex items-center justify-center gap-2.5 text-sm sm:text-base active:scale-[0.99] cursor-pointer group"
                           >
-                            <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
-                              <Smartphone className="w-4 h-4 text-emerald-300 group-hover:scale-110 transition-transform" />
-                            </div>
-                            <span>Mulai Tap di Android</span>
+                            <Smartphone className="w-5 h-5 text-emerald-400 shrink-0 group-hover:scale-110 transition-transform" />
+                            <span>Mulai Tap NFC di Android</span>
                           </button>
                         ) : (
-                          <div className="space-y-1.5 w-full">
-                            <div className="p-2 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center justify-between text-xs text-emerald-900 font-bold shadow-2xs">
+                          <div className="space-y-2 w-full">
+                            <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-2xl flex items-center justify-between text-xs text-emerald-900 font-bold shadow-2xs">
                               <div className="flex items-center gap-2">
                                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping shrink-0" />
-                                <span className="text-[11px]">NFC Android Sedang Memindai</span>
+                                <span className="text-xs">Sensor NFC Android Aktif...</span>
                               </div>
                               <span className="text-[10px] bg-emerald-200 text-emerald-950 px-2 py-0.5 rounded-md font-mono">
-                                ACTIVE
+                                SCANNING
                               </span>
                             </div>
                             <button
@@ -1795,7 +1799,7 @@ export default function NFCAttendanceApp() {
                                 e.stopPropagation();
                                 stopScan();
                               }}
-                              className="w-full bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-bold py-2 px-3 rounded-xl border border-rose-200 transition-all flex items-center justify-center gap-1.5 text-xs active:scale-98 cursor-pointer"
+                              className="w-full bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-bold py-2.5 px-3 rounded-2xl border border-rose-200 transition-all flex items-center justify-center gap-1.5 text-xs active:scale-[0.99] cursor-pointer"
                             >
                               <X className="w-4 h-4" />
                               <span>Hentikan Tap Android</span>
@@ -1803,14 +1807,14 @@ export default function NFCAttendanceApp() {
                           </div>
                         )}
 
-                        <div className="grid grid-cols-2 gap-1.5">
+                        <div className="grid grid-cols-2 gap-2 pt-1">
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setShowAndroidGuideModal(true);
                             }}
-                            className="w-full text-slate-600 bg-slate-100 hover:bg-slate-200 py-1.5 px-2 rounded-lg text-[10.5px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                            className="w-full text-slate-600 bg-slate-50 hover:bg-slate-100 py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-slate-200/80"
                           >
                             <HelpCircle className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                             <span>Bantuan NFC HP</span>
@@ -1823,7 +1827,7 @@ export default function NFCAttendanceApp() {
                               fetchPesertaList();
                               setShowQuickManualModal(true);
                             }}
-                            className="w-full text-emerald-700 bg-emerald-50 hover:bg-emerald-100 py-1.5 px-2 rounded-lg text-[10.5px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer border border-emerald-200"
+                            className="w-full text-emerald-700 bg-emerald-50 hover:bg-emerald-100 py-2 px-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-emerald-200"
                           >
                             <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                             <span>Presensi Manual</span>
@@ -1832,13 +1836,13 @@ export default function NFCAttendanceApp() {
                       </div>
 
                       {usbInputVal && (
-                        <div className="mt-2 px-2.5 py-1 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded tracking-wider">
-                          Mengetik: {usbInputVal}█
+                        <div className="mt-3 px-2.5 py-1 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded tracking-wider w-full">
+                          Input USB: {usbInputVal}█
                         </div>
                       )}
 
                       {errorMsg && (
-                        <p className="mt-2 text-[11px] text-red-500 bg-red-50 py-1.5 px-2.5 rounded-md w-full">
+                        <p className="mt-3 text-[11px] text-red-500 bg-red-50 py-1.5 px-2.5 rounded-xl w-full border border-red-200">
                           {errorMsg}
                         </p>
                       )}
