@@ -31,7 +31,7 @@ interface FgdData {
   temuan_masalah: string[];
   prioritas_masalah: string;
   akar_masalah: string;
-  solusi: string;
+  solusi: string[];
   ap_nama_kegiatan: string;
   ap_deskripsi: string;
   ap_sasaran: string;
@@ -49,7 +49,7 @@ const initialFgdData: FgdData = {
   temuan_masalah: [""],
   prioritas_masalah: "",
   akar_masalah: "",
-  solusi: "",
+  solusi: [""],
   ap_nama_kegiatan: "",
   ap_deskripsi: "",
   ap_sasaran: "",
@@ -158,6 +158,23 @@ export default function FormFGD() {
     }
   };
 
+  const handleSolusiChange = (index: number, value: string) => {
+    const newSolusi = [...data.solusi];
+    newSolusi[index] = value;
+    setData((prev) => ({ ...prev, solusi: newSolusi }));
+  };
+
+  const addSolusi = () => {
+    setData((prev) => ({ ...prev, solusi: [...prev.solusi, ""] }));
+  };
+
+  const removeSolusi = (index: number) => {
+    if (data.solusi.length > 1) {
+      const newSolusi = data.solusi.filter((_, i) => i !== index);
+      setData((prev) => ({ ...prev, solusi: newSolusi }));
+    }
+  };
+
   const handleSave = async () => {
     if (!data.nama_kelompok) {
       setMessage({ type: "error", text: "Silakan pilih Nama Kelompok FGD terlebih dahulu." });
@@ -177,7 +194,7 @@ export default function FormFGD() {
         temuan_masalah: data.temuan_masalah.filter(t => t.trim() !== ""),
         prioritas_masalah: data.prioritas_masalah,
         akar_masalah: data.akar_masalah,
-        solusi: data.solusi,
+        solusi: JSON.stringify(data.solusi.filter(s => s.trim() !== "")),
         ap_nama_kegiatan: data.ap_nama_kegiatan,
         ap_deskripsi: data.ap_deskripsi,
         ap_sasaran: data.ap_sasaran,
@@ -216,12 +233,25 @@ export default function FormFGD() {
     }
   };
 
-  const loadRecord = (record: FgdData) => {
+  const loadRecord = (record: any) => {
+    let parsedSolusi = [""];
+    if (typeof record.solusi === 'string') {
+        if (record.solusi.trim().startsWith('[')) {
+            try { parsedSolusi = JSON.parse(record.solusi); } catch (e) { parsedSolusi = [record.solusi]; }
+        } else if (record.solusi) {
+            parsedSolusi = [record.solusi];
+        }
+    } else if (Array.isArray(record.solusi)) {
+        parsedSolusi = record.solusi;
+    }
+    if (parsedSolusi.length === 0) parsedSolusi = [""];
+
     setData({
       ...record,
       temuan_masalah: Array.isArray(record.temuan_masalah) && record.temuan_masalah.length > 0 
         ? record.temuan_masalah 
         : [""],
+      solusi: parsedSolusi,
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -239,7 +269,7 @@ export default function FormFGD() {
     if (printWindow) {
       printWindow.document.write(`
         <!DOCTYPE html>
-        <html>
+        <` + `html>
           <head>
             <title>Laporan_FGD_${data.nama_kelompok || 'Publik'}</title>
             <script src="https://cdn.tailwindcss.com"></script>
@@ -266,7 +296,7 @@ export default function FormFGD() {
               }, 1200);
             </script>
           </body>
-        </html>
+        <` + `/html>
       `);
       printWindow.document.close();
     } else {
@@ -339,7 +369,13 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
                     <tr>
                       <td className="p-5 border border-slate-300 text-center font-bold text-lg">1</td>
                       <td className="p-5 border border-slate-300 whitespace-pre-wrap">{data.prioritas_masalah || "-"}</td>
-                      <td className="p-5 border border-slate-300 whitespace-pre-wrap">{data.solusi || "-"}</td>
+                      <td className="p-5 border border-slate-300">
+                        <ol className="list-decimal pl-4 space-y-1">
+                          {data.solusi.filter(s => s.trim() !== "").length > 0 ? data.solusi.filter(s => s.trim() !== "").map((s, idx) => (
+                            <li key={idx} className="pl-1 whitespace-pre-wrap">{s}</li>
+                          )) : <li>-</li>}
+                        </ol>
+                      </td>
                       <td className="p-5 border border-slate-300">
                          {/* Action Plan Content */}
                          {data.ap_pelaksana && (
@@ -413,7 +449,16 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
                       </tr>
                       <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Prioritas Masalah</td><td className="border border-slate-800 p-3 whitespace-pre-wrap font-medium">{data.prioritas_masalah || "-"}</td></tr>
                       <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Akar Masalah</td><td className="border border-slate-800 p-3 whitespace-pre-wrap">{data.akar_masalah || "-"}</td></tr>
-                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Solusi yang Disepakati</td><td className="border border-slate-800 p-3 whitespace-pre-wrap font-medium">{data.solusi || "-"}</td></tr>
+                      <tr>
+                        <td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Solusi yang Disepakati</td>
+                        <td className="border border-slate-800 p-3">
+                          <ol className="list-decimal pl-5 space-y-2 font-medium">
+                            {data.solusi.filter(s => s.trim() !== "").length > 0 ? data.solusi.filter(s => s.trim() !== "").map((s, idx) => (
+                              <li key={idx} className="pl-1 whitespace-pre-wrap">{s}</li>
+                            )) : <li>-</li>}
+                          </ol>
+                        </td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -464,7 +509,7 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
         <div>
           <h1 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
             <MessageSquare className="text-[#203598]" />
-            Form Forum Group Discussion (FGD)
+            Focus Group Discussion
           </h1>
           <p className="text-sm text-slate-500 mt-1">
             Isi dan kelola data hasil diskusi kelompok secara terstruktur.
@@ -490,14 +535,6 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
             className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 font-semibold text-sm rounded-xl transition-colors flex items-center gap-2 border border-amber-200"
           >
             <Printer className="w-4 h-4" /> Unduh (Juri)
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-4 py-2 bg-[#203598] hover:bg-blue-800 text-white font-semibold text-sm rounded-xl transition-colors flex items-center gap-2 disabled:opacity-50"
-          >
-            {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
-            Simpan Data
           </button>
         </div>
       </div>
@@ -698,16 +735,43 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
                 <div className="hidden print:block text-sm text-justify whitespace-pre-wrap">{data.akar_masalah || "-"}</div>
               </div>
 
-              <div className="space-y-1.5">
+              <div className="space-y-3">
                 <label className="text-sm font-semibold text-slate-700">4. Solusi</label>
-                <textarea
-                  value={data.solusi}
-                  onChange={(e) => handleInputChange("solusi", e.target.value)}
-                  placeholder="Tuliskan solusi yang disepakati..."
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-[#203598] min-h-[80px] print:hidden"
-                />
-                <div className="hidden print:block text-sm text-justify whitespace-pre-wrap p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-900 font-medium">
-                  {data.solusi || "-"}
+                <div className="space-y-2 print:hidden">
+                  {data.solusi.map((s, idx) => (
+                    <div key={idx} className="flex gap-2 items-start">
+                      <span className="mt-2 text-sm font-bold text-emerald-600 w-5">{idx + 1}.</span>
+                      <textarea
+                        value={s}
+                        onChange={(e) => handleSolusiChange(idx, e.target.value)}
+                        placeholder={`Solusi ke-${idx + 1}`}
+                        className="flex-1 px-3 py-2 bg-emerald-50/30 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-emerald-600 min-h-[60px]"
+                      />
+                      <button 
+                        onClick={() => removeSolusi(idx)}
+                        disabled={data.solusi.length === 1}
+                        className="mt-1 p-2 text-red-500 hover:bg-red-50 rounded-lg disabled:opacity-30 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                  <button 
+                    onClick={addSolusi}
+                    className="flex items-center gap-1.5 text-sm font-semibold text-emerald-600 hover:text-emerald-800 mt-2 px-2 py-1 rounded-md hover:bg-emerald-50 transition-colors ml-6"
+                  >
+                    <Plus className="w-4 h-4" /> Tambah Solusi
+                  </button>
+                </div>
+                <div className="hidden print:block text-sm text-justify p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 font-medium">
+                  <ol className="list-decimal pl-4 space-y-1.5">
+                    {data.solusi.filter(s => s.trim() !== "").map((s, idx) => (
+                      <li key={idx} className="pl-1 whitespace-pre-wrap">{s}</li>
+                    ))}
+                    {data.solusi.filter(s => s.trim() !== "").length === 0 && (
+                      <li className="text-slate-400 italic">Belum ada solusi</li>
+                    )}
+                  </ol>
                 </div>
               </div>
 
@@ -800,6 +864,18 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
 
             </div>
           </section>
+
+          {/* SAVE BUTTON BOTTOM */}
+          <div className="flex justify-end pt-2 print:hidden">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-6 py-3 bg-[#203598] hover:bg-blue-800 text-white font-bold text-[15px] rounded-xl transition-all flex items-center gap-2 shadow-sm hover:shadow-md disabled:opacity-50"
+            >
+              {saving ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-5 h-5" />}
+              Simpan Data FGD
+            </button>
+          </div>
         </div>
 
         {/* RIGHT COLUMN: SAVED RECORDS (Hidden in Print) */}

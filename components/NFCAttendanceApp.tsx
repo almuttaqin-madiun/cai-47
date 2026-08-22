@@ -1686,7 +1686,7 @@ export default function NFCAttendanceApp() {
                           : "text-[#203598]"
                       }`}
                     />
-                    <span>FGD</span>
+                    <span>Focus Group Discussion</span>
                   </div>
                 </button>
               </div>
