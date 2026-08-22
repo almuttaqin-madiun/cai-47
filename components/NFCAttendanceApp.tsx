@@ -31,6 +31,7 @@ import {
   Copy,
   Search,
   RefreshCw,
+  MessageSquare,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getAllUidCandidates, hexToDecimal, toTitleCase } from "@/lib/utils";
@@ -43,6 +44,7 @@ import SuccessDialog from "./SuccessDialog";
 import PlottingPeserta from "./PlottingPeserta";
 import StatistikKehadiran from "./StatistikKehadiran";
 import PerizinanSesi from "./PerizinanSesi";
+import FormFGD from "./FormFGD";
 import AuthRoleModal, { UserSession, RoleType, normalizeRoleKey } from "./AuthRoleModal";
 
 interface AttendanceRecord {
@@ -68,6 +70,7 @@ const ROLE_ALLOWED_TABS: Record<string, string[]> = {
     "nfc",
     "plotting_tenda",
     "plotting_fgd",
+    "fgd_form",
     "jadwal_materi",
     "jadwal_makan",
     "jadwal_sholat",
@@ -84,6 +87,7 @@ const ROLE_ALLOWED_TABS: Record<string, string[]> = {
     "nfc",
     "plotting_tenda",
     "plotting_fgd",
+    "fgd_form",
     "jadwal_materi",
     "jadwal_makan",
     "jadwal_sholat",
@@ -126,6 +130,7 @@ const ROLE_ALLOWED_TABS: Record<string, string[]> = {
     "peserta",
     "plotting_tenda",
     "plotting_fgd",
+    "fgd_form",
     "jadwal_materi",
     "jadwal_makan",
     "jadwal_sholat",
@@ -134,16 +139,7 @@ const ROLE_ALLOWED_TABS: Record<string, string[]> = {
     "statistik",
   ],
   fasilitator: [
-    "peserta",
-    "plotting_tenda",
-    "plotting_fgd",
-    "presensi_grafik",
-    "presensi_izin",
-    "jadwal_materi",
-    "jadwal_makan",
-    "jadwal_sholat",
-    "sesi",
-    "statistik",
+    "fgd_form",
   ],
 };
 
@@ -153,7 +149,7 @@ export default function NFCAttendanceApp() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<
-    "presensi" | "presensi_grafik" | "presensi_izin" | "input" | "peserta" | "nfc" | "plotting_tenda" | "plotting_fgd" | "sesi" | "jadwal_materi" | "jadwal_makan" | "jadwal_sholat" | "rekap_presensi" | "statistik"
+    "presensi" | "presensi_grafik" | "presensi_izin" | "input" | "peserta" | "nfc" | "plotting_tenda" | "plotting_fgd" | "fgd_form" | "sesi" | "jadwal_materi" | "jadwal_makan" | "jadwal_sholat" | "rekap_presensi" | "statistik"
   >("presensi");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
@@ -536,9 +532,11 @@ export default function NFCAttendanceApp() {
 
         const [resRiwayat, resKehadiran] = await Promise.all([qRiwayat, qKehadiran]);
 
-        if (resRiwayat.error || resKehadiran.error) {
-          console.error("DB Fetch Error - Riwayat:", resRiwayat.error, "Kehadiran:", resKehadiran.error);
-          // Do not clear the UI if the database fetch fails
+        if (resRiwayat.error) console.warn("DB Fetch Warning - Riwayat:", resRiwayat.error);
+        if (resKehadiran.error) console.warn("DB Fetch Warning - Kehadiran:", resKehadiran.error);
+
+        if (resRiwayat.error && resKehadiran.error) {
+          // Do not clear the UI if both database fetches fail completely
           return;
         }
 
@@ -1666,6 +1664,34 @@ export default function NFCAttendanceApp() {
               </div>
             )}
 
+            {/* Form FGD */}
+            {isTabAllowed("fgd_form") && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => {
+                    setActiveTab("fgd_form");
+                    setIsMobileOpen(false);
+                  }}
+                  className={`w-full px-3.5 py-2.5 rounded-xl text-left font-bold text-sm flex items-center justify-between transition-all cursor-pointer ${
+                    activeTab === "fgd_form"
+                      ? "bg-[#203598] text-white shadow-sm"
+                      : "text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <MessageSquare
+                      className={`w-4 h-4 ${
+                        activeTab === "fgd_form"
+                          ? "text-white"
+                          : "text-[#203598]"
+                      }`}
+                    />
+                    <span>FGD</span>
+                  </div>
+                </button>
+              </div>
+            )}
+
             {/* Jadwal */}
             {(isTabAllowed("jadwal_materi") || isTabAllowed("jadwal_makan") || isTabAllowed("jadwal_sholat")) && (
               <div className="space-y-1">
@@ -1826,6 +1852,8 @@ export default function NFCAttendanceApp() {
           {activeTab === "plotting_tenda" && <PlottingPeserta type="tenda" />}
 
           {activeTab === "plotting_fgd" && <PlottingPeserta type="fgd" />}
+          
+          {activeTab === "fgd_form" && <FormFGD />}
 
           {activeTab === "input" && (
             <InputPesertaForm onGoToData={() => setActiveTab("peserta")} />

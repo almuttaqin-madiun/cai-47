@@ -252,12 +252,8 @@ export default function PlottingPeserta({ type }: PlottingPesertaProps) {
 
   // Initial default options matching the system classes / tents
   const defaultInitialGroups = useMemo(() => {
-    if (isTenda) {
-      return ["Tenda 01", "Tenda 02", "Tenda 03", "Tenda 04"];
-    } else {
-      return ["Pegon SMP", "Bacaan SMP", "Lambatan SMP", "Cepatan SMP"];
-    }
-  }, [isTenda]);
+    return [];
+  }, []);
 
   // Extract all existing groups combining DB master table, peserta assignments, and defaults
   const existingGroups = useMemo(() => {
@@ -2138,7 +2134,7 @@ export default function PlottingPeserta({ type }: PlottingPesertaProps) {
                   type="text"
                   value={newGroupName}
                   onChange={(e) => setNewGroupName(e.target.value)}
-                  placeholder={`Contoh: ${isTenda ? "Tenda 01" : "Pegon SMP"}`}
+                  placeholder={`Contoh: ${isTenda ? "Tenda 01" : "FGD 01"}`}
                   className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#203598]"
                   autoFocus
                 />
