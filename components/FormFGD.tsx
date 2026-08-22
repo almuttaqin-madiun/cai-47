@@ -67,6 +67,7 @@ export default function FormFGD() {
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [savedRecords, setSavedRecords] = useState<FgdData[]>([]);
+  const [printMode, setPrintMode] = useState<"publik" | "juri" | null>(null);
 
   const printRef = useRef<HTMLDivElement>(null);
 
@@ -226,13 +227,53 @@ export default function FormFGD() {
   };
 
   const handlePrint = (type: "publik" | "juri") => {
-    // We will attach a class to body to indicate print mode
-    document.body.setAttribute("data-print-mode", type);
-    window.print();
-    // After print dialog closes, remove it
-    setTimeout(() => {
-      document.body.removeAttribute("data-print-mode");
-    }, 1000);
+    setPrintMode(type);
+  };
+
+  const handleDownloadPDF = () => {
+    const element = document.getElementById('print-content-area');
+    if (!element) return;
+    
+    // Buka popup window baru untuk print guna menghindari blokir iframe & error oklch html2canvas
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Laporan_FGD_${data.nama_kelompok || 'Publik'}</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <style>
+              @media print {
+                @page {
+                  margin: 15mm;
+                  size: ${printMode === 'publik' ? 'A4 landscape' : 'A4 portrait'};
+                }
+                body {
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                  background: white !important;
+                }
+              }
+              body { font-family: sans-serif; }
+            </style>
+          </head>
+          <body class="bg-white text-slate-800 p-8">
+            ${element.innerHTML}
+            <script>
+              setTimeout(() => {
+                window.print();
+              }, 1200);
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } else {
+      // Fallback jika popup diblokir browser
+      alert("Popup terblokir oleh browser. Silakan izinkan popup, atau tekan OK untuk mencoba cetak dari halaman ini.");
+      window.print();
+    }
   };
 
   const sqlQuery = `
@@ -261,10 +302,164 @@ ALTER TABLE public.hasil_fgd ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USING (true) WITH CHECK (true);
   `.trim();
 
+  if (printMode) {
+    return (
+      <div className="bg-white min-h-screen text-slate-800">
+        {/* Header UI (Hidden on Print) */}
+        <div className="print:hidden flex justify-between items-center p-4 bg-[#f8f9fa] border-b border-slate-200 sticky top-0 z-50">
+          <h1 className="text-xl font-bold text-slate-800">
+            {printMode === "publik" ? "Laporan Notulensi & Action Plan FGD" : "Laporan Lengkap FGD (Data Juri)"}
+          </h1>
+          <div className="flex gap-3 items-center">
+            <span className="text-sm text-slate-500 hidden md:inline-block mr-4">Catatan: Jika tombol tidak berfungsi, buka di tab baru (ikon ↗️)</span>
+            <button onClick={() => setPrintMode(null)} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-700 font-semibold hover:bg-slate-50 transition-colors">
+              Tutup
+            </button>
+            <button onClick={handleDownloadPDF} className="px-4 py-2 bg-[#16a34a] hover:bg-green-700 text-white rounded-lg font-semibold flex items-center gap-2 shadow-sm transition-colors">
+              <Printer className="w-4 h-4" /> Unduh PDF
+            </button>
+          </div>
+        </div>
+        
+        {/* Print Content */}
+        <div id="print-content-area" className="p-8 max-w-6xl mx-auto bg-white">
+          {printMode === "publik" ? (
+             // Publik Layout
+             <div>
+               <table className="w-full border-collapse border border-slate-300">
+                  <thead className="bg-[#1c1c1c] text-white">
+                    <tr>
+                      <th className="p-4 text-left w-16 border border-slate-300 uppercase text-sm font-bold tracking-wide">No</th>
+                      <th className="p-4 text-left w-1/4 border border-slate-300 uppercase text-sm font-bold tracking-wide">Problem</th>
+                      <th className="p-4 text-left w-1/4 border border-slate-300 uppercase text-sm font-bold tracking-wide">Solusi</th>
+                      <th className="p-4 text-left border border-slate-300 uppercase text-sm font-bold tracking-wide">Program Action Plan</th>
+                    </tr>
+                  </thead>
+                  <tbody className="align-top text-[15px]">
+                    <tr>
+                      <td className="p-5 border border-slate-300 text-center font-bold text-lg">1</td>
+                      <td className="p-5 border border-slate-300 whitespace-pre-wrap">{data.prioritas_masalah || "-"}</td>
+                      <td className="p-5 border border-slate-300 whitespace-pre-wrap">{data.solusi || "-"}</td>
+                      <td className="p-5 border border-slate-300">
+                         {/* Action Plan Content */}
+                         {data.ap_pelaksana && (
+                           <div className="mb-5 flex flex-wrap gap-2">
+                             <span className="px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-full text-xs font-bold uppercase tracking-wider">
+                               BID. {data.ap_pelaksana}
+                             </span>
+                           </div>
+                         )}
+                         <div className="grid grid-cols-[130px_auto] gap-2 mb-3">
+                           <div className="text-slate-500 font-medium">Nama Kegiatan</div>
+                           <div className="font-semibold text-slate-800">: {data.ap_nama_kegiatan || "-"}</div>
+                         </div>
+                         <div className="grid grid-cols-[130px_auto] gap-2 mb-3">
+                           <div className="text-slate-500 font-medium">Peserta</div>
+                           <div className="font-medium text-slate-700">: {data.ap_sasaran || "-"}</div>
+                         </div>
+                         <div className="grid grid-cols-[130px_auto] gap-2 mb-3">
+                           <div className="text-slate-500 font-medium">Waktu</div>
+                           <div className="font-medium text-slate-700">: {data.ap_waktu || "-"}</div>
+                         </div>
+                         <div className="grid grid-cols-[130px_auto] gap-2 mb-3">
+                           <div className="text-slate-500 font-medium">Indikator / Dana</div>
+                           <div className="font-medium text-slate-700 whitespace-pre-wrap">: {data.ap_indikator || "-"}</div>
+                         </div>
+                      </td>
+                    </tr>
+                  </tbody>
+               </table>
+               
+               <div className="mt-8 flex justify-between text-sm text-slate-600">
+                  <div>Nama Kelompok: <strong>{data.nama_kelompok || "-"}</strong></div>
+                  <div>Juru Bicara: <strong>{data.juru_bicara || "-"}</strong></div>
+               </div>
+             </div>
+          ) : (
+             // Juri Layout
+             <div className="space-y-6">
+               <div className="text-center border-b-2 border-black pb-4 mb-8">
+                  <h1 className="text-2xl font-bold uppercase tracking-wider mb-1">Laporan Lengkap FGD</h1>
+                  <p className="text-slate-600 font-medium">Data Terperinci untuk Penilaian Juri | CAI 2026 KOTA MADIUN</p>
+                </div>
+                
+                <div className="mb-6">
+                  <h2 className="text-sm font-bold bg-slate-100 p-2 border-l-4 border-slate-800 uppercase tracking-wide mb-3">I. Informasi Kelompok</h2>
+                  <table className="w-full border-collapse border border-slate-800 text-[15px]">
+                    <tbody>
+                      <tr><td className="border border-slate-800 p-3 font-bold w-48 bg-slate-50">Nama Kelompok</td><td className="border border-slate-800 p-3 font-bold text-lg">{data.nama_kelompok || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Fasilitator</td><td className="border border-slate-800 p-3">{data.fasilitator || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Pendamping</td><td className="border border-slate-800 p-3">{data.pendamping || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Penulis (Notulis)</td><td className="border border-slate-800 p-3">{data.penulis || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Juru Bicara</td><td className="border border-slate-800 p-3 font-bold">{data.juru_bicara || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Anggota Kelompok</td><td className="border border-slate-800 p-3">{currentMembers.length > 0 ? currentMembers.map(m => m.nama).join(", ") : "-"}</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mb-6">
+                  <h2 className="text-sm font-bold bg-slate-100 p-2 border-l-4 border-slate-800 uppercase tracking-wide mb-3">II. Hasil Diskusi</h2>
+                  <table className="w-full border-collapse border border-slate-800 text-[15px]">
+                    <tbody>
+                      <tr>
+                        <td className="border border-slate-800 p-3 font-bold w-48 bg-slate-50 align-top">Daftar Temuan Masalah</td>
+                        <td className="border border-slate-800 p-3">
+                          <ol className="list-decimal pl-5 space-y-2">
+                            {data.temuan_masalah.filter(t => t.trim() !== "").length > 0 ? data.temuan_masalah.filter(t => t.trim() !== "").map((t, idx) => (
+                              <li key={idx} className="pl-1 whitespace-pre-wrap">{t}</li>
+                            )) : <li>-</li>}
+                          </ol>
+                        </td>
+                      </tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Prioritas Masalah</td><td className="border border-slate-800 p-3 whitespace-pre-wrap font-medium">{data.prioritas_masalah || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Akar Masalah</td><td className="border border-slate-800 p-3 whitespace-pre-wrap">{data.akar_masalah || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Solusi yang Disepakati</td><td className="border border-slate-800 p-3 whitespace-pre-wrap font-medium">{data.solusi || "-"}</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mb-6">
+                  <h2 className="text-sm font-bold bg-slate-100 p-2 border-l-4 border-slate-800 uppercase tracking-wide mb-3">III. Action Plan</h2>
+                  <table className="w-full border-collapse border border-slate-800 text-[15px]">
+                    <tbody>
+                      <tr><td className="border border-slate-800 p-3 font-bold w-48 bg-slate-50">Nama Kegiatan</td><td className="border border-slate-800 p-3 font-bold text-base">{data.ap_nama_kegiatan || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Deskripsi Kegiatan</td><td className="border border-slate-800 p-3 whitespace-pre-wrap">{data.ap_deskripsi || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Sasaran</td><td className="border border-slate-800 p-3">{data.ap_sasaran || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Pelaksana</td><td className="border border-slate-800 p-3">{data.ap_pelaksana || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Waktu Pelaksanaan</td><td className="border border-slate-800 p-3">{data.ap_waktu || "-"}</td></tr>
+                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Indikator Keberhasilan</td><td className="border border-slate-800 p-3 whitespace-pre-wrap">{data.ap_indikator || "-"}</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+             </div>
+          )}
+        </div>
+        
+        <style dangerouslySetInnerHTML={{__html: `
+          @media print {
+            @page {
+              margin: 15mm;
+              size: ${printMode === 'publik' ? 'A4 landscape' : 'A4 portrait'};
+            }
+            body {
+              background: white !important;
+            }
+            * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          }
+        `}} />
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-6xl mx-auto space-y-6 pb-20 print:p-0 print:m-0 print:max-w-none print:bg-white">
+    <div className="relative">
+      {/* INTERACTIVE UI - HIDDEN ON PRINT */}
+      <div className="max-w-6xl mx-auto space-y-6 pb-20 print:hidden">
       
-      {/* HEADER - Hides on Print */}
+        {/* HEADER */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm print:hidden">
         <div>
           <h1 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
@@ -308,7 +503,7 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
       </div>
 
       {message && (
-        <div className={`p-4 rounded-xl flex items-start gap-3 print:hidden ${message.type === 'success' ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-800'}`}>
+        <div className={"p-4 rounded-xl flex items-start gap-3 print:hidden " + (message.type === 'success' ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-800')}>
           {message.type === 'success' ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
           <p className="text-sm font-medium">{message.text}</p>
         </div>
@@ -694,21 +889,8 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
         </div>
       )}
 
-      {/* Custom Styles for Print specific tweaks */}
-      <style dangerouslySetInnerHTML={{__html: `
-        @media print {
-          body[data-print-mode="publik"] .print-juri-only {
-            display: none !important;
-          }
-          body[data-print-mode="juri"] .print-juri-only {
-            display: block !important;
-          }
-          @page {
-            margin: 20mm;
-            size: A4 portrait;
-          }
-        }
-      `}} />
+      </div> {/* END INTERACTIVE UI */}
+
     </div>
   );
 }
