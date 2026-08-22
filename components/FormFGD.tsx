@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
+import { toTitleCase } from "@/lib/utils";
 import {
   Save,
   Printer,
@@ -428,7 +429,24 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
                       <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Pendamping</td><td className="border border-slate-800 p-3">{data.pendamping || "-"}</td></tr>
                       <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Penulis (Notulis)</td><td className="border border-slate-800 p-3">{data.penulis || "-"}</td></tr>
                       <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50">Juru Bicara</td><td className="border border-slate-800 p-3 font-bold">{data.juru_bicara || "-"}</td></tr>
-                      <tr><td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">Anggota Kelompok</td><td className="border border-slate-800 p-3">{currentMembers.length > 0 ? currentMembers.map(m => m.nama).join(", ") : "-"}</td></tr>
+                      <tr>
+                        <td className="border border-slate-800 p-3 font-bold bg-slate-50 align-top">
+                          Anggota Kelompok {currentMembers.length > 0 && `(${currentMembers.length})`}
+                        </td>
+                        <td className="border border-slate-800 p-3">
+                          {currentMembers.length > 0 ? (
+                            <ol className="list-decimal pl-5 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm text-slate-800 font-medium">
+                              {currentMembers.map((m) => (
+                                <li key={m.id} className="pl-1 leading-snug">
+                                  {toTitleCase(m.nama)}
+                                </li>
+                              ))}
+                            </ol>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -577,26 +595,38 @@ CREATE POLICY "Allow all full access hasil_fgd" ON public.hasil_fgd FOR ALL USIN
                 </div>
 
                 <div className="space-y-1.5 print:hidden">
-                  <label className="text-sm font-semibold text-slate-700">2. Anggota Kelompok</label>
-                  <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-600 h-24 overflow-y-auto">
+                  <label className="text-sm font-semibold text-slate-700">
+                    2. Anggota Kelompok {currentMembers.length > 0 && `(${currentMembers.length})`}
+                  </label>
+                  <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-700 h-28 overflow-y-auto">
                     {currentMembers.length > 0 ? (
-                      <ul className="list-disc pl-4 space-y-1">
+                      <ol className="list-decimal pl-5 space-y-1 font-medium">
                         {currentMembers.map(m => (
-                          <li key={m.id}>{m.nama}</li>
+                          <li key={m.id}>{toTitleCase(m.nama)}</li>
                         ))}
-                      </ul>
+                      </ol>
                     ) : (
-                      <span className="italic">Pilih nama kelompok untuk melihat anggota...</span>
+                      <span className="italic text-slate-500">Pilih nama kelompok untuk melihat anggota...</span>
                     )}
                   </div>
                 </div>
 
                 {/* Print only member list */}
                 <div className="hidden print:block space-y-1.5 col-span-2">
-                  <label className="text-sm font-semibold text-slate-700">Anggota Kelompok:</label>
-                  <p className="text-sm">
-                    {currentMembers.length > 0 ? currentMembers.map(m => m.nama).join(", ") : "-"}
-                  </p>
+                  <label className="text-sm font-semibold text-slate-700">
+                    Anggota Kelompok {currentMembers.length > 0 && `(${currentMembers.length})`}:
+                  </label>
+                  {currentMembers.length > 0 ? (
+                    <ol className="list-decimal pl-5 grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-slate-800 font-medium">
+                      {currentMembers.map((m) => (
+                        <li key={m.id} className="pl-1">
+                          {toTitleCase(m.nama)}
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-sm">-</p>
+                  )}
                 </div>
               </div>
 
